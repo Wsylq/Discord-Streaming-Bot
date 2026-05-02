@@ -1,4 +1,4 @@
-# discord-video-selfbot
+# Discord Video Selfbot - Wsylq
 
 Stream local video files to Discord voice channels.
 
@@ -10,8 +10,12 @@ Stream local video files to Discord voice channels.
 - [ ] Add buffer for rewinding
 - [x] Add Loop
 - [ ] Add Queue
-- [ ] Add Search
+- [ ] Add Now-playing and Duration
+- [x] Add Search, with Pick arguments
+   - [x] Add Channel Videos Search
 - [x] Add Help Command -- Trying embed, if no perms then bot will send msg saying no perms.
+- [ ] Add Audio-Only-Mode to provide highest quality audio
+   - [ ] Add Lyrics
 
 ## Setup
 
@@ -56,8 +60,13 @@ npm run dev
 
 ### Commands
 
-- `!start` — Begin streaming videos from your folder
+- `!search <query>` — Search YouTube and play the top result
+- `!search -pick <query>` — Search and choose from top 5 results
+  - `!pick <number>` — Pick a result
+- `!search -channel <handle>` — Browse latest videos from a channel
+  - `!pick <number>` — Pick a video to play
 - `!play <youtube_url>` — Download and stream a YouTube video
+- `!start` — Begin streaming videos from your folder
 - `!pause` — Pause the current stream
 - `!resume` — Resume from where you paused
 - `!loop` — Toggle looping the current track
