@@ -4,7 +4,13 @@ Stream local video files to Discord voice channels.
 
 TO-DO
 
-[] Add youtube links player support
+- [ ] Add youtube links player support
+
+- [ ] Add Buffer for rewinding.
+
+- [ ] Add pause and resume feature
+
+- [ ] Add sound
 
 ## Setup
 
@@ -46,6 +52,7 @@ npm run dev
 ### Commands
 
 - `!start` — Begin streaming videos from your folder
+- `!play <youtube_url>` — Stream a YouTube video directly
 - `!skip` — Skip to next video
 - `!stop` — Stop streaming
 

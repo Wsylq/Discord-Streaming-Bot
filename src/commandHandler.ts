@@ -1,9 +1,11 @@
 import type { Client, TextChannel, VoiceChannel } from 'discord.js-selfbot-v13';
 import type { VideoQueue } from './videoQueue';
+import { isYouTubeUrl } from './youtubePlayer';
 
 export interface StreamController {
   isStreaming: boolean;
   start(voiceChannel: VoiceChannel, queue: VideoQueue, textChannel: TextChannel): Promise<void>;
+  playUrl(voiceChannel: VoiceChannel, url: string): Promise<void>;
   stop(): Promise<void>;
   skip(): Promise<void>;
 }
@@ -40,7 +42,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
     if (data.author.id !== OWNER_ID) return;
     if (data.channel_id !== TEXT_CHANNEL_ID) return;
 
-    const content = data.content;
+    const content = data.content.trim();
 
     if (content === '!start') {
       if (streamController.isStreaming) return;
@@ -60,6 +62,35 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
         await streamController.start(voiceChannel, queue, textChannel);
       } catch (err) {
         console.error('[cmd] !start error:', err);
+      }
+      return;
+    }
+
+    if (content.startsWith('!play ')) {
+      const url = content.slice('!play '.length).trim();
+
+      if (!isYouTubeUrl(url)) {
+        try {
+          const ch = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+          await ch.send('Invalid URL. Only YouTube links are supported.');
+        } catch { /* ignore */ }
+        return;
+      }
+
+      if (streamController.isStreaming) {
+        try {
+          const ch = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+          await ch.send('Already streaming. Use !stop first.');
+        } catch { /* ignore */ }
+        return;
+      }
+
+      try {
+        await client.guilds.fetch(GUILD_ID);
+        const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
+        await streamController.playUrl(voiceChannel, url);
+      } catch (err) {
+        console.error('[cmd] !play error:', err);
       }
       return;
     }

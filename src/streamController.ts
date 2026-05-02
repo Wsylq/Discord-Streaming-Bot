@@ -1,27 +1,11 @@
 import type { TextChannel, VoiceChannel } from 'discord.js-selfbot-v13';
-import { Encoders, prepareStream, playStream } from '@dank074/discord-video-stream';
+import { prepareStream, playStream } from '@dank074/discord-video-stream';
 import type { Streamer } from '@dank074/discord-video-stream';
 import { advance, currentFile, isEmpty } from './videoQueue';
 import type { VideoQueue } from './videoQueue';
 import type { StreamController } from './commandHandler';
-
-const ENCODER_OPTIONS = {
-  encoder: Encoders.software({ x264: { preset: 'superfast' } }),
-  width: 1280,
-  height: 720,
-  frameRate: 30,
-  bitrateVideo: 2500,
-  bitrateVideoMax: 5000,
-  bitrateAudio: 128,
-  videoCodec: 'H264' as const,
-  includeAudio: true,
-  hardwareAcceleratedDecoding: false,
-  minimizeLatency: false,
-  noTranscoding: false,
-  customHeaders: {},
-  customInputOptions: [],
-  customFfmpegFlags: [],
-};
+import { ENCODER_OPTIONS } from './encoderOptions';
+import { playYouTubeUrl } from './youtubePlayer';
 
 interface StreamState {
   isStreaming: boolean;
@@ -85,7 +69,6 @@ export function createStreamController(streamer: Streamer): StreamController {
       try {
         await streamer.joinVoice(voiceChannel.guild.id, voiceChannel.id);
         console.log('[stream] Joined voice. Creating stream...');
-        // Give Discord a moment to establish the voice connection
         await new Promise(resolve => setTimeout(resolve, 1000));
         console.log('[stream] Starting playback...');
       } catch (err) {
@@ -94,11 +77,48 @@ export function createStreamController(streamer: Streamer): StreamController {
         return;
       }
 
-      // Step 3: start playing — don't await so !stop/!skip remain responsive
       playNext(queue).catch((err) => {
         console.error('[stream] Unhandled playNext error:', err);
         state.isStreaming = false;
       });
+    },
+
+    async playUrl(voiceChannel: VoiceChannel, url: string): Promise<void> {
+      if (state.isStreaming) return;
+
+      state.isStreaming = true;
+      console.log(`[stream] Joining voice channel ${voiceChannel.id} for YouTube stream...`);
+
+      try {
+        await streamer.joinVoice(voiceChannel.guild.id, voiceChannel.id);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (err) {
+        console.error('[stream] Failed to join voice channel:', err);
+        state.isStreaming = false;
+        return;
+      }
+
+      const abort = new AbortController();
+      state.abortController = abort;
+
+      console.log(`[stream] Streaming YouTube: ${url}`);
+
+      playYouTubeUrl(url, streamer, abort.signal)
+        .then(() => {
+          if (state.isStreaming) {
+            streamer.leaveVoice();
+            state.isStreaming = false;
+            state.abortController = null;
+            console.log('[stream] YouTube stream finished.');
+          }
+        })
+        .catch((err: unknown) => {
+          if (err instanceof Error && (err.name === 'AbortError' || err.message?.includes('aborted'))) {
+            return;
+          }
+          console.error('[stream] YouTube stream error:', err);
+          state.isStreaming = false;
+        });
     },
 
     async stop(): Promise<void> {
