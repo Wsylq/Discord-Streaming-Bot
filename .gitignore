@@ -27,7 +27,6 @@ yarn-error.log*
 # Jest cache
 .jest-cache/
 jest_cache/
-./scripts/*
 
 # Video files
 *.mkv
