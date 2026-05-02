@@ -6,6 +6,12 @@ import { createStreamController } from './streamController';
 import { registerCommandHandler } from './commandHandler';
 
 process.on('uncaughtException', (err: Error) => {
+  // SRTP errors from node-datachannel are non-fatal — the stream ended
+  // but the process should keep running for the next command
+  if (err.message?.includes('SRTP') || err.message?.includes('libdatachannel')) {
+    console.warn('[warn] Caught non-fatal native error:', err.message);
+    return;
+  }
   console.error('Uncaught exception:', err.stack ?? err);
   process.exit(1);
 });

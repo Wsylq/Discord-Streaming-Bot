@@ -9,6 +9,7 @@ Stream local video files to Discord voice channels.
 - [ ] Add buffer for rewinding
 - [ ] Add pause and resume feature
 - [ ] Add Loop
+- [ ] Add Queue
 
 ## Setup
 

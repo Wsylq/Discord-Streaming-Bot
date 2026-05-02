@@ -4,6 +4,7 @@ import { isYouTubeUrl } from './youtubePlayer';
 
 export interface StreamController {
   isStreaming: boolean;
+  isInVoice: boolean;
   start(voiceChannel: VoiceChannel, queue: VideoQueue, textChannel: TextChannel): Promise<void>;
   playUrl(voiceChannel: VoiceChannel, url: string, textChannel: TextChannel): Promise<void>;
   stop(): Promise<void>;

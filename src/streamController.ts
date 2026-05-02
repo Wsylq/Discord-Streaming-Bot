@@ -9,6 +9,7 @@ import { playYouTubeUrl, type DownloadProgress } from './youtubePlayer';
 
 interface StreamState {
   isStreaming: boolean;
+  isInVoice: boolean;
   abortController: AbortController | null;
   queue: VideoQueue | null;
 }
@@ -16,19 +17,42 @@ interface StreamState {
 export function createStreamController(streamer: Streamer): StreamController {
   const state: StreamState = {
     isStreaming: false,
+    isInVoice: false,
     abortController: null,
     queue: null,
   };
+
+  async function joinVoice(voiceChannel: VoiceChannel): Promise<boolean> {
+    // Always rejoin — reusing an existing SRTP session between streams
+    // causes "SRTP protect error" when the crypto context expires
+    if (state.isInVoice) {
+      try {
+        streamer.leaveVoice();
+      } catch { /* ignore */ }
+      state.isInVoice = false;
+      // Brief pause for the old connection to fully close
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+    try {
+      await streamer.joinVoice(voiceChannel.guild.id, voiceChannel.id);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      state.isInVoice = true;
+      return true;
+    } catch (err) {
+      console.error('[stream] Failed to join voice channel:', err);
+      return false;
+    }
+  }
 
   async function playNext(queue: VideoQueue): Promise<void> {
     const filePath = currentFile(queue);
 
     if (!filePath) {
-      streamer.leaveVoice();
+      // Queue done — stay in VC, just mark as not streaming
       state.isStreaming = false;
       state.abortController = null;
       state.queue = null;
-      console.log('Queue complete. Left voice channel.');
+      console.log('[stream] Queue complete. Staying in voice channel.');
       return;
     }
 
@@ -40,7 +64,6 @@ export function createStreamController(streamer: Streamer): StreamController {
       state.abortController = abort;
 
       const { output, promise } = prepareStream(filePath, ENCODER_OPTIONS, abort.signal);
-
       await playStream(output, streamer, { type: 'camera', readrateInitialBurst: 10 }, abort.signal);
       await promise;
     } catch (err: unknown) {
@@ -60,22 +83,17 @@ export function createStreamController(streamer: Streamer): StreamController {
       return state.isStreaming;
     },
 
+    get isInVoice() {
+      return state.isInVoice;
+    },
+
     async start(voiceChannel: VoiceChannel, queue: VideoQueue, _textChannel: TextChannel): Promise<void> {
       if (state.isStreaming) return;
 
-      state.isStreaming = true;
-      console.log(`[stream] Joining voice channel ${voiceChannel.id}...`);
+      const joined = await joinVoice(voiceChannel);
+      if (!joined) return;
 
-      try {
-        await streamer.joinVoice(voiceChannel.guild.id, voiceChannel.id);
-        console.log('[stream] Joined voice. Creating stream...');
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        console.log('[stream] Starting playback...');
-      } catch (err) {
-        console.error('[stream] Failed to join voice channel:', err);
-        state.isStreaming = false;
-        return;
-      }
+      state.isStreaming = true;
 
       playNext(queue).catch((err) => {
         console.error('[stream] Unhandled playNext error:', err);
@@ -86,24 +104,16 @@ export function createStreamController(streamer: Streamer): StreamController {
     async playUrl(voiceChannel: VoiceChannel, url: string, textChannel: TextChannel): Promise<void> {
       if (state.isStreaming) return;
 
-      state.isStreaming = true;
-      console.log(`[stream] Joining voice channel ${voiceChannel.id} for YouTube stream...`);
+      const joined = await joinVoice(voiceChannel);
+      if (!joined) return;
 
-      try {
-        await streamer.joinVoice(voiceChannel.guild.id, voiceChannel.id);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      } catch (err) {
-        console.error('[stream] Failed to join voice channel:', err);
-        state.isStreaming = false;
-        return;
-      }
+      state.isStreaming = true;
 
       const abort = new AbortController();
       state.abortController = abort;
 
       console.log(`[stream] Streaming YouTube: ${url}`);
 
-      // Send progress updates to the text channel every ~5 seconds
       let lastProgressMsg = 0;
       const onProgress = async (p: { percent: number; speed: string; eta: string }) => {
         const now = Date.now();
@@ -116,13 +126,10 @@ export function createStreamController(streamer: Streamer): StreamController {
 
       playYouTubeUrl(url, streamer, abort.signal, onProgress)
         .then(async () => {
-          if (state.isStreaming) {
-            streamer.leaveVoice();
-            state.isStreaming = false;
-            state.abortController = null;
-            console.log('[stream] YouTube stream finished.');
-            try { await textChannel.send('✅ Stream finished.'); } catch { /* ignore */ }
-          }
+          state.isStreaming = false;
+          state.abortController = null;
+          console.log('[stream] YouTube stream finished. Staying in voice channel.');
+          try { await textChannel.send('✅ Done. Send `!play` to queue another.'); } catch { /* ignore */ }
         })
         .catch((err: unknown) => {
           if (err instanceof Error && (err.name === 'AbortError' || err.message?.includes('aborted'))) {
@@ -134,19 +141,20 @@ export function createStreamController(streamer: Streamer): StreamController {
     },
 
     async stop(): Promise<void> {
-      if (!state.isStreaming) return;
-
-      state.isStreaming = false;
-
       if (state.abortController) {
         state.abortController.abort();
         state.abortController = null;
       }
 
+      state.isStreaming = false;
       state.queue = null;
-      streamer.stopStream();
-      streamer.leaveVoice();
-      console.log('[stream] Stopped.');
+
+      if (state.isInVoice) {
+        streamer.stopStream();
+        streamer.leaveVoice();
+        state.isInVoice = false;
+        console.log('[stream] Stopped and left voice channel.');
+      }
     },
 
     async skip(): Promise<void> {
@@ -162,9 +170,7 @@ export function createStreamController(streamer: Streamer): StreamController {
       if (isEmpty(nextQueue)) {
         state.isStreaming = false;
         state.queue = null;
-        streamer.stopStream();
-        streamer.leaveVoice();
-        console.log('[stream] Queue complete after skip. Left voice channel.');
+        console.log('[stream] Queue complete after skip. Staying in voice channel.');
         return;
       }
 
