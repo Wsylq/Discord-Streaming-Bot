@@ -33,7 +33,7 @@ async function main(): Promise<void> {
     console.log(`Selfbot ready. Logged in as ${client.user?.username ?? 'unknown'}.`);
 
     client.user?.setPresence({
-      activities: [{ name: '🎬 Ready to stream | !start', type: 'WATCHING' }],
+      activities: [{ name: 'trustion dih | !start', type: 'WATCHING' }],
       status: 'online',
     });
   });

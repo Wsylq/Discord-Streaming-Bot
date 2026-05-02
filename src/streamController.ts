@@ -5,7 +5,7 @@ import { advance, currentFile, isEmpty } from './videoQueue';
 import type { VideoQueue } from './videoQueue';
 import type { StreamController } from './commandHandler';
 import { ENCODER_OPTIONS } from './encoderOptions';
-import { playYouTubeUrl } from './youtubePlayer';
+import { playYouTubeUrl, type DownloadProgress } from './youtubePlayer';
 
 interface StreamState {
   isStreaming: boolean;
@@ -41,7 +41,7 @@ export function createStreamController(streamer: Streamer): StreamController {
 
       const { output, promise } = prepareStream(filePath, ENCODER_OPTIONS, abort.signal);
 
-      await playStream(output, streamer, { type: 'camera' }, abort.signal);
+      await playStream(output, streamer, { type: 'camera', readrateInitialBurst: 10 }, abort.signal);
       await promise;
     } catch (err: unknown) {
       if (err instanceof Error && (err.name === 'AbortError' || err.message?.includes('aborted'))) {
@@ -83,7 +83,7 @@ export function createStreamController(streamer: Streamer): StreamController {
       });
     },
 
-    async playUrl(voiceChannel: VoiceChannel, url: string): Promise<void> {
+    async playUrl(voiceChannel: VoiceChannel, url: string, textChannel: TextChannel): Promise<void> {
       if (state.isStreaming) return;
 
       state.isStreaming = true;
@@ -103,13 +103,25 @@ export function createStreamController(streamer: Streamer): StreamController {
 
       console.log(`[stream] Streaming YouTube: ${url}`);
 
-      playYouTubeUrl(url, streamer, abort.signal)
-        .then(() => {
+      // Send progress updates to the text channel every ~5 seconds
+      let lastProgressMsg = 0;
+      const onProgress = async (p: { percent: number; speed: string; eta: string }) => {
+        const now = Date.now();
+        if (now - lastProgressMsg < 5000) return;
+        lastProgressMsg = now;
+        try {
+          await textChannel.send(`⬇️ Downloading: **${p.percent.toFixed(1)}%** at ${p.speed} — ETA ${p.eta}`);
+        } catch { /* ignore */ }
+      };
+
+      playYouTubeUrl(url, streamer, abort.signal, onProgress)
+        .then(async () => {
           if (state.isStreaming) {
             streamer.leaveVoice();
             state.isStreaming = false;
             state.abortController = null;
             console.log('[stream] YouTube stream finished.');
+            try { await textChannel.send('✅ Stream finished.'); } catch { /* ignore */ }
           }
         })
         .catch((err: unknown) => {

@@ -5,7 +5,7 @@ import { isYouTubeUrl } from './youtubePlayer';
 export interface StreamController {
   isStreaming: boolean;
   start(voiceChannel: VoiceChannel, queue: VideoQueue, textChannel: TextChannel): Promise<void>;
-  playUrl(voiceChannel: VoiceChannel, url: string): Promise<void>;
+  playUrl(voiceChannel: VoiceChannel, url: string, textChannel: TextChannel): Promise<void>;
   stop(): Promise<void>;
   skip(): Promise<void>;
 }
@@ -88,7 +88,8 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       try {
         await client.guilds.fetch(GUILD_ID);
         const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
-        await streamController.playUrl(voiceChannel, url);
+        const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+        await streamController.playUrl(voiceChannel, url, textChannel);
       } catch (err) {
         console.error('[cmd] !play error:', err);
       }
