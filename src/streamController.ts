@@ -41,7 +41,7 @@ export function createStreamController(streamer: Streamer): StreamController {
 
       const { output, promise } = prepareStream(filePath, ENCODER_OPTIONS, abort.signal);
 
-      await playStream(output, streamer, { type: 'go-live' }, abort.signal);
+      await playStream(output, streamer, { type: 'camera' }, abort.signal);
       await promise;
     } catch (err: unknown) {
       if (err instanceof Error && (err.name === 'AbortError' || err.message?.includes('aborted'))) {

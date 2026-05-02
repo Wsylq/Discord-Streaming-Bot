@@ -59,6 +59,6 @@ export async function playYouTubeUrl(
 
   const { output, promise } = prepareStream(streamUrl, ENCODER_OPTIONS, abortSignal);
 
-  await playStream(output, streamer, { type: 'go-live' }, abortSignal);
+  await playStream(output, streamer, { type: 'camera' }, abortSignal);
   await promise;
 }

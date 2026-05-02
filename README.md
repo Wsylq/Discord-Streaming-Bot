@@ -2,24 +2,24 @@
 
 Stream local video files to Discord voice channels.
 
-TO-DO
+## TODO
 
-- [ ] Add youtube links player support
-
-- [ ] Add Buffer for rewinding.
-
+- [x] Add youtube links player support
+- [x] Add sound
+- [ ] Add buffer for rewinding
 - [ ] Add pause and resume feature
-
-- [ ] Add sound
+- [ ] Add Loop
 
 ## Setup
 
 1. Clone and install dependencies:
+
 ```bash
 npm install
 ```
 
 2. Copy `.env.example` to `.env` and fill in your details:
+
 ```bash
 cp .env.example .env
 ```
@@ -39,12 +39,14 @@ cp .env.example .env
 ## Usage
 
 Build and run:
+
 ```bash
 npm run build
 npm start
 ```
 
 Or run directly:
+
 ```bash
 npm run dev
 ```
