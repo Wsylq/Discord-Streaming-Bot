@@ -8,20 +8,26 @@ import { ENCODER_OPTIONS } from './encoderOptions';
 import { downloadYouTubeVideo, deleteTempFile, type DownloadProgress } from './youtubePlayer';
 
 interface PauseState {
-  filePath: string;       // local file to resume from
-  isTempFile: boolean;    // whether we own this file and must delete it
-  seekSeconds: number;    // position to resume from
-  startedAt: number;      // wall clock when this segment started
-  baseSeconds: number;    // accumulated time before this segment
+  filePath: string;
+  isTempFile: boolean;
+  seekSeconds: number;
+  startedAt: number;
+  baseSeconds: number;
 }
 
 interface StreamState {
   isStreaming: boolean;
   isPaused: boolean;
   isInVoice: boolean;
+  loopTrack: boolean;      // loop current track
+  loopQueue: boolean;      // loop entire queue
   abortController: AbortController | null;
   queue: VideoQueue | null;
   pause: PauseState | null;
+  // For YouTube loop: keep the downloaded file alive across loops
+  loopTempFile: string | null;
+  loopUrl: string | null;
+  voiceChannel: VoiceChannel | null; // last joined channel, for loop rejoin
 }
 
 export function createStreamController(streamer: Streamer): StreamController {
@@ -29,14 +35,30 @@ export function createStreamController(streamer: Streamer): StreamController {
     isStreaming: false,
     isPaused: false,
     isInVoice: false,
+    loopTrack: false,
+    loopQueue: false,
     abortController: null,
     queue: null,
     pause: null,
+    loopTempFile: null,
+    loopUrl: null,
+    voiceChannel: null,
   };
 
   function cleanupTempFile(): void {
     if (state.pause?.isTempFile && state.pause.filePath) {
-      deleteTempFile(state.pause.filePath);
+      // Don't delete if it's the loop file — we'll reuse it
+      if (state.pause.filePath !== state.loopTempFile) {
+        deleteTempFile(state.pause.filePath);
+      }
+    }
+  }
+
+  function cleanupLoopTempFile(): void {
+    if (state.loopTempFile) {
+      deleteTempFile(state.loopTempFile);
+      state.loopTempFile = null;
+      state.loopUrl = null;
     }
   }
 
@@ -50,6 +72,7 @@ export function createStreamController(streamer: Streamer): StreamController {
       await streamer.joinVoice(voiceChannel.guild.id, voiceChannel.id);
       await new Promise(resolve => setTimeout(resolve, 1000));
       state.isInVoice = true;
+      state.voiceChannel = voiceChannel;
       return true;
     } catch (err) {
       console.error('[stream] Failed to join voice channel:', err);
@@ -57,10 +80,6 @@ export function createStreamController(streamer: Streamer): StreamController {
     }
   }
 
-  /**
-   * Plays a local file from seekSeconds, tracking position for pause/resume.
-   * Returns true if playback completed naturally, false if aborted.
-   */
   async function playFile(
     filePath: string,
     isTempFile: boolean,
@@ -77,15 +96,8 @@ export function createStreamController(streamer: Streamer): StreamController {
       baseSeconds: seekSeconds,
     };
 
-    // Build input options: -ss must be the first input option for fast seek
-    const seekInputOptions = seekSeconds > 0
-      ? ['-ss', seekSeconds.toFixed(3)]
-      : [];
-
-    const options = {
-      ...ENCODER_OPTIONS,
-      customInputOptions: seekInputOptions,
-    };
+    const seekInputOptions = seekSeconds > 0 ? ['-ss', seekSeconds.toFixed(3)] : [];
+    const options = { ...ENCODER_OPTIONS, customInputOptions: seekInputOptions };
 
     try {
       const { output, promise } = prepareStream(filePath, options, abort.signal);
@@ -105,6 +117,13 @@ export function createStreamController(streamer: Streamer): StreamController {
     const filePath = currentFile(queue);
 
     if (!filePath) {
+      if (state.loopQueue && queue.files.length > 0) {
+        console.log('[stream] Queue loop: restarting from beginning.');
+        await new Promise(resolve => setTimeout(resolve, 800));
+        if (state.voiceChannel) await joinVoice(state.voiceChannel);
+        await playNext({ files: queue.files, currentIndex: 0 });
+        return;
+      }
       state.isStreaming = false;
       state.abortController = null;
       state.queue = null;
@@ -120,14 +139,24 @@ export function createStreamController(streamer: Streamer): StreamController {
 
     if (completed && state.isStreaming && !state.isPaused) {
       state.pause = null;
-      await playNext(advance(queue));
+      if (state.loopTrack) {
+        console.log('[stream] Track loop: replaying.');
+        // Rejoin for a fresh SRTP context
+        await new Promise(resolve => setTimeout(resolve, 800));
+        if (state.voiceChannel) await joinVoice(state.voiceChannel);
+        await playNext(queue);
+      } else {
+        await playNext(advance(queue));
+      }
     }
   }
 
   const controller: StreamController = {
-    get isStreaming() { return state.isStreaming; },
-    get isPaused()    { return state.isPaused; },
-    get isInVoice()   { return state.isInVoice; },
+    get isStreaming()  { return state.isStreaming; },
+    get isPaused()     { return state.isPaused; },
+    get isInVoice()    { return state.isInVoice; },
+    get loopTrack()    { return state.loopTrack; },
+    get loopQueue()    { return state.loopQueue; },
 
     async start(voiceChannel: VoiceChannel, queue: VideoQueue, _textChannel: TextChannel): Promise<void> {
       if (state.isStreaming) return;
@@ -166,44 +195,83 @@ export function createStreamController(streamer: Streamer): StreamController {
         } catch { /* ignore */ }
       };
 
+      // If looping the same URL, reuse the already-downloaded file
       let tmpFile: string;
-      try {
-        tmpFile = await downloadYouTubeVideo(url, streamer, downloadAbort.signal, onProgress);
-      } catch (err: unknown) {
-        state.isStreaming = false;
-        if (err instanceof Error && err.message?.includes('aborted')) return;
-        console.error('[stream] Download error:', err);
-        return;
-      }
+      if (state.loopTempFile && state.loopUrl === url) {
+        console.log('[stream] Loop: reusing cached file.');
+        tmpFile = state.loopTempFile;
+      } else {
+        // Clean up any previous loop file before downloading new one
+        cleanupLoopTempFile();
+        try {
+          tmpFile = await downloadYouTubeVideo(url, streamer, downloadAbort.signal, onProgress);
+        } catch (err: unknown) {
+          state.isStreaming = false;
+          if (err instanceof Error && err.message?.includes('aborted')) return;
+          console.error('[stream] Download error:', err);
+          return;
+        }
 
-      if (downloadAbort.signal.aborted || !state.isStreaming) {
-        deleteTempFile(tmpFile);
-        return;
+        if (downloadAbort.signal.aborted || !state.isStreaming) {
+          deleteTempFile(tmpFile);
+          return;
+        }
+
+        // Cache for potential loop reuse
+        state.loopTempFile = tmpFile;
+        state.loopUrl = url;
       }
 
       console.log('[stream] Playing downloaded file...');
 
-      // playFile will set state.pause with isTempFile=true
-      const completed = await playFile(tmpFile, true);
+      const playLoop = async (): Promise<void> => {
+        const completed = await playFile(tmpFile, true);
 
-      if (!state.isPaused) {
-        // Not paused — clean up temp file now
-        cleanupTempFile();
-        state.pause = null;
-        state.isStreaming = false;
-        state.abortController = null;
-        if (completed) {
-          console.log('[stream] YouTube stream finished.');
-          try { await textChannel.send('✅ Done. Send `!play` to queue another.'); } catch { /* ignore */ }
+        if (!state.isPaused && state.isStreaming) {
+          if (completed && state.loopTrack) {
+            console.log('[stream] Track loop: replaying YouTube video.');
+            // Rejoin for a fresh SRTP context before replaying
+            await new Promise(resolve => setTimeout(resolve, 800));
+            const rejoined = await joinVoice(voiceChannel);
+            if (!rejoined) {
+              state.isStreaming = false;
+              cleanupLoopTempFile();
+              return;
+            }
+            await playLoop();
+          } else {
+            if (!state.loopTrack) cleanupLoopTempFile();
+            state.pause = null;
+            state.isStreaming = false;
+            state.abortController = null;
+            if (completed) {
+              console.log('[stream] YouTube stream finished.');
+              try { await textChannel.send('✅ Done. Send `!play` to queue another.'); } catch { /* ignore */ }
+            }
+          }
         }
-      }
-      // If paused, temp file stays alive — resume will clean it up
+      };
+
+      await playLoop();
+    },
+
+    toggleLoopTrack(): boolean {
+      state.loopTrack = !state.loopTrack;
+      if (state.loopTrack) state.loopQueue = false; // mutually exclusive
+      console.log(`[stream] Loop track: ${state.loopTrack}`);
+      return state.loopTrack;
+    },
+
+    toggleLoopQueue(): boolean {
+      state.loopQueue = !state.loopQueue;
+      if (state.loopQueue) state.loopTrack = false;
+      console.log(`[stream] Loop queue: ${state.loopQueue}`);
+      return state.loopQueue;
     },
 
     async pause(): Promise<boolean> {
       if (!state.isStreaming || state.isPaused || !state.pause) return false;
 
-      // Calculate current position
       const elapsed = (Date.now() - state.pause.startedAt) / 1000;
       const seekSeconds = state.pause.baseSeconds + elapsed;
 
@@ -232,28 +300,36 @@ export function createStreamController(streamer: Streamer): StreamController {
 
       console.log(`[stream] Resuming from ${seekSeconds.toFixed(1)}s`);
 
-      // Brief wait for previous stream cleanup to complete
       await new Promise(resolve => setTimeout(resolve, 800));
 
-      // Rejoin for a fresh SRTP context
       const joined = await joinVoice(voiceChannel);
       if (!joined) {
         state.isStreaming = false;
-        state.isPaused = true; // stay paused so user can retry
+        state.isPaused = true;
         return false;
       }
 
       const completed = await playFile(filePath, isTempFile, seekSeconds);
 
       if (!state.isPaused) {
-        if (isTempFile) {
+        if (isTempFile && filePath !== state.loopTempFile) {
           cleanupTempFile();
         }
         state.pause = null;
 
-        // If it was a local queue file and completed, advance queue
         if (completed && state.isStreaming && !isTempFile && state.queue) {
-          await playNext(advance(state.queue));
+          if (state.loopTrack) {
+            await playNext(state.queue);
+          } else {
+            await playNext(advance(state.queue));
+          }
+        } else if (completed && state.isStreaming && isTempFile && state.loopTrack && state.loopTempFile) {
+          // Loop YouTube video from start
+          const completed2 = await playFile(state.loopTempFile, true);
+          if (!completed2 || !state.loopTrack) {
+            cleanupLoopTempFile();
+            state.isStreaming = false;
+          }
         } else {
           state.isStreaming = false;
         }
@@ -269,9 +345,12 @@ export function createStreamController(streamer: Streamer): StreamController {
       }
 
       cleanupTempFile();
+      cleanupLoopTempFile();
 
       state.isStreaming = false;
       state.isPaused = false;
+      state.loopTrack = false;
+      state.loopQueue = false;
       state.queue = null;
       state.pause = null;
 
@@ -291,8 +370,13 @@ export function createStreamController(streamer: Streamer): StreamController {
         state.abortController = null;
       }
 
-      // Clean up temp file if skipping a YouTube video
+      // Skipping always breaks out of track loop
+      state.loopTrack = false;
+
       cleanupTempFile();
+      // Keep loopTempFile if loopQueue is on and it's a YouTube video
+      if (!state.loopQueue) cleanupLoopTempFile();
+
       state.pause = null;
       state.isPaused = false;
 
@@ -304,9 +388,17 @@ export function createStreamController(streamer: Streamer): StreamController {
       const nextQueue = advance(state.queue);
 
       if (isEmpty(nextQueue)) {
-        state.isStreaming = false;
-        state.queue = null;
-        console.log('[stream] Queue complete after skip.');
+        if (state.loopQueue) {
+          state.isStreaming = true;
+          playNext({ files: state.queue.files, currentIndex: 0 }).catch((err) => {
+            console.error('[stream] Loop queue restart error:', err);
+            state.isStreaming = false;
+          });
+        } else {
+          state.isStreaming = false;
+          state.queue = null;
+          console.log('[stream] Queue complete after skip.');
+        }
         return;
       }
 

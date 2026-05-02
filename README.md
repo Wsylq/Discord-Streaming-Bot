@@ -8,8 +8,9 @@ Stream local video files to Discord voice channels.
 - [x] Add sound
 - [x] Add pause and resume feature
 - [ ] Add buffer for rewinding
-- [ ] Add Loop
+- [x] Add Loop
 - [ ] Add Queue
+- [ ] Add Search
 
 ## Setup
 
@@ -55,9 +56,11 @@ npm run dev
 ### Commands
 
 - `!start` — Begin streaming videos from your folder
-- `!play <youtube_url>` — Stream a YouTube video directly
+- `!play <youtube_url>` — Download and stream a YouTube video
 - `!pause` — Pause the current stream
 - `!resume` — Resume from where you paused
+- `!loop` — Toggle looping the current track
+- `!loopqueue` — Toggle looping the entire queue
 - `!skip` — Skip to next video
 - `!stop` — Stop streaming and leave voice
 
