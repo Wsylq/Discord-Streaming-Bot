@@ -4,9 +4,12 @@ import { isYouTubeUrl } from './youtubePlayer';
 
 export interface StreamController {
   isStreaming: boolean;
+  isPaused: boolean;
   isInVoice: boolean;
   start(voiceChannel: VoiceChannel, queue: VideoQueue, textChannel: TextChannel): Promise<void>;
   playUrl(voiceChannel: VoiceChannel, url: string, textChannel: TextChannel): Promise<void>;
+  pause(): Promise<boolean>;
+  resume(voiceChannel: VoiceChannel): Promise<boolean>;
   stop(): Promise<void>;
   skip(): Promise<void>;
 }
@@ -39,7 +42,6 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
 
     const data = packet.d;
 
-    // Only respond to the owner in the configured text channel
     if (data.author.id !== OWNER_ID) return;
     if (data.channel_id !== TEXT_CHANNEL_ID) return;
 
@@ -81,7 +83,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       if (streamController.isStreaming) {
         try {
           const ch = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
-          await ch.send('Already streaming. Use !stop first.');
+          await ch.send('Already streaming. Use `!stop` first.');
         } catch { /* ignore */ }
         return;
       }
@@ -97,13 +99,52 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       return;
     }
 
+    if (content === '!pause') {
+      if (!streamController.isStreaming) {
+        try {
+          const ch = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+          await ch.send('Nothing is playing.');
+        } catch { /* ignore */ }
+        return;
+      }
+      const ok = await streamController.pause();
+      if (ok) {
+        try {
+          const ch = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+          await ch.send('⏸️ Paused.');
+        } catch { /* ignore */ }
+      }
+      return;
+    }
+
+    if (content === '!resume') {
+      if (!streamController.isPaused) {
+        try {
+          const ch = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+          await ch.send('Nothing is paused.');
+        } catch { /* ignore */ }
+        return;
+      }
+      try {
+        const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
+        const ok = await streamController.resume(voiceChannel);
+        if (ok) {
+          const ch = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+          await ch.send('▶️ Resumed.');
+        }
+      } catch (err) {
+        console.error('[cmd] !resume error:', err);
+      }
+      return;
+    }
+
     if (content === '!stop') {
       await streamController.stop();
       return;
     }
 
     if (content === '!skip') {
-      if (!streamController.isStreaming) return;
+      if (!streamController.isStreaming && !streamController.isPaused) return;
       await streamController.skip();
       return;
     }

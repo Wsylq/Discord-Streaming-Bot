@@ -20,12 +20,7 @@ export const ENCODER_OPTIONS = {
   minimizeLatency: true,
   noTranscoding: false,
   customHeaders: {},
-  // -itsoffset delays the input by 200ms, which means video frames get
-  // PTS values 200ms higher than audio — Discord plays video 200ms later.
-  // This compensates for video frames being larger and arriving at Discord
-  // after the smaller audio frames.
-  // Tune: video still ahead → increase to 0.3 | audio now ahead → decrease to 0.1
-  customInputOptions: ['-itsoffset', '0.2'],
+  customInputOptions: [],
   customFfmpegFlags: [
     '-af', 'aresample=async=1000',
     '-vsync', 'cfr',
