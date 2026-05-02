@@ -88,20 +88,35 @@ export function createStreamController(streamer: Streamer): StreamController {
     const abort = new AbortController();
     state.abortController = abort;
 
+    const seekInputOptions = seekSeconds > 0 ? ['-ss', seekSeconds.toFixed(3)] : [];
+    const options = { ...ENCODER_OPTIONS, customInputOptions: seekInputOptions };
+
+    // Set startedAt AFTER prepareStream+playStream are ready, not before.
+    // This avoids counting ffmpeg startup time (~1-2s) as elapsed playback.
+    // We use a flag to mark when actual playback begins.
+    let playbackStarted = false;
+
     state.pause = {
       filePath,
       isTempFile,
       seekSeconds,
-      startedAt: Date.now(),
+      startedAt: Date.now(), // will be corrected once playback actually starts
       baseSeconds: seekSeconds,
     };
 
-    const seekInputOptions = seekSeconds > 0 ? ['-ss', seekSeconds.toFixed(3)] : [];
-    const options = { ...ENCODER_OPTIONS, customInputOptions: seekInputOptions };
-
     try {
       const { output, promise } = prepareStream(filePath, options, abort.signal);
+
+      // playStream resolves once the stream connection is established and
+      // frames start flowing — that's when we reset the clock
       await playStream(output, streamer, { type: 'camera', readrateInitialBurst: 10 }, abort.signal);
+      playbackStarted = true;
+
+      // Reset the clock now that frames are actually being sent
+      if (state.pause) {
+        state.pause = { ...state.pause, startedAt: Date.now() };
+      }
+
       await promise;
       return true;
     } catch (err: unknown) {
@@ -284,7 +299,11 @@ export function createStreamController(streamer: Streamer): StreamController {
         state.abortController = null;
       }
 
+      // Fully leave voice so the SRTP context is torn down cleanly.
+      // Resume will rejoin with a fresh context.
       try { streamer.stopStream(); } catch { /* ignore */ }
+      try { streamer.leaveVoice(); } catch { /* ignore */ }
+      state.isInVoice = false;
 
       console.log(`[stream] Paused at ${seekSeconds.toFixed(1)}s`);
       return true;
@@ -300,8 +319,8 @@ export function createStreamController(streamer: Streamer): StreamController {
 
       console.log(`[stream] Resuming from ${seekSeconds.toFixed(1)}s`);
 
-      await new Promise(resolve => setTimeout(resolve, 800));
-
+      // isInVoice is already false (we left on pause), so joinVoice
+      // goes straight to joining without the leave+wait cycle
       const joined = await joinVoice(voiceChannel);
       if (!joined) {
         state.isStreaming = false;

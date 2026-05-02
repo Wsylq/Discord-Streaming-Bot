@@ -57,6 +57,21 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
 
     const content = data.content.trim();
 
+    if (content === '!help') {
+      await reply(
+        '**Commands**\n' +
+        '`!play <url>` — Download and stream a YouTube video\n' +
+        '`!start` — Stream videos from your local folder\n' +
+        '`!pause` — Pause the current stream\n' +
+        '`!resume` — Resume from where you paused\n' +
+        '`!skip` — Skip to the next video\n' +
+        '`!loop` — Toggle looping the current track\n' +
+        '`!loopqueue` — Toggle looping the entire queue\n' +
+        '`!stop` — Stop streaming and leave voice'
+      );
+      return;
+    }
+
     if (content === '!start') {
       if (streamController.isStreaming) return;
       if (queue.files.length === 0) { await reply('No videos found in the configured folder.'); return; }
