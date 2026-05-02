@@ -1,0 +1,67 @@
+# discord-video-selfbot
+
+Stream local video files to Discord voice channels.
+
+TO-DO
+
+[] Add youtube links player support
+
+## Setup
+
+1. Clone and install dependencies:
+```bash
+npm install
+```
+
+2. Copy `.env.example` to `.env` and fill in your details:
+```bash
+cp .env.example .env
+```
+
+3. Get your Discord token:
+   - Open Discord in browser
+   - Press `Ctrl+Shift+I` (DevTools)
+   - Go to Console tab
+   - Type `localStorage.token` and press Enter
+   - Copy the token (without quotes)
+
+4. Get channel IDs:
+   - Enable Developer Mode in Discord settings
+   - Right-click on server → Copy Server ID
+   - Right-click on channels → Copy Channel ID
+
+## Usage
+
+Build and run:
+```bash
+npm run build
+npm start
+```
+
+Or run directly:
+```bash
+npm run dev
+```
+
+### Commands
+
+- `!start` — Begin streaming videos from your folder
+- `!skip` — Skip to next video
+- `!stop` — Stop streaming
+
+## Config
+
+All settings go in `.env`:
+
+- `DISCORD_TOKEN` — Your user token
+- `VIDEO_FOLDER` — Path to folder with videos
+- `GUILD_ID` — Server ID
+- `VOICE_CHANNEL_ID` — Voice channel to stream in
+- `TEXT_CHANNEL_ID` — Text channel for commands
+- `OWNER_ID` — Your user ID (only you can control the bot)
+
+Supported formats: mp4, mkv, mov, avi, webm
+
+## Note
+
+This is a selfbot. Use at your own risk. Discord's ToS prohibits selfbots.
