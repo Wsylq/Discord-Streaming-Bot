@@ -6,6 +6,7 @@ import { createStreamController } from './streamController';
 import { registerCommandHandler } from './commandHandler';
 import { WebhookNotifier } from './webhookNotifier';
 import { ChannelBrowser } from './channelBrowser';
+import { QueueDisplay } from './queueDisplay';
 
 process.on('uncaughtException', (err: Error) => {
   // SRTP errors from node-datachannel are non-fatal — the stream ended
@@ -35,9 +36,10 @@ async function main(): Promise<void> {
   const streamer = new Streamer(client);
   const notifier = config.webhookUrl ? new WebhookNotifier(config.webhookUrl) : null;
   const browser = config.webhookUrl ? new ChannelBrowser(config.webhookUrl) : null;
-  const streamController = createStreamController(streamer, notifier);
+  const queueDisplay = config.webhookUrl ? new QueueDisplay(config.webhookUrl) : null;
+  const streamController = createStreamController(streamer, notifier, queueDisplay);
 
-  registerCommandHandler({ streamController, queue, client, browser });
+  registerCommandHandler({ streamController, queue, client, browser, queueDisplay });
 
   client.on('ready', () => {
     console.log(`Selfbot ready. Logged in as ${client.user?.username ?? 'unknown'}.`);

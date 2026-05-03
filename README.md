@@ -9,10 +9,10 @@ A Discord selfbot that streams video directly into voice channels. Point it at a
 - [x] Add pause and resume feature
 - [ ] Add buffer for rewinding
 - [x] Add Loop
-- [ ] Add Queue
-   - [ ] Persistent Queues - .db file
+- [x] Add Queue
+   - [x] Persistent Queues - .db file
 - [x] Add Now-playing and Duration
-   - [ ] Make it Sticky Message
+   <s>- [ ] Make it Sticky Message</s>
 - [x] Add Search, with Pick arguments
    - [x] Add Channel Videos Search
       - [x] Make it via an Embed to Search (type) and Browse (buttons) videos there
@@ -20,6 +20,7 @@ A Discord selfbot that streams video directly into voice channels. Point it at a
 - [ ] Add Audio-Only-Mode to provide highest quality audio
    - [ ] Add Lyrics
 - [ ] Add Dashboard - Optional
+- [ ] Search command Optimizations
 
 ## Setup
 

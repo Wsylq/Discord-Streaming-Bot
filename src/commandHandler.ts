@@ -2,6 +2,8 @@ import type { Client, TextChannel, VoiceChannel } from 'discord.js-selfbot-v13';
 import type { VideoQueue } from './videoQueue';
 import { isYouTubeUrl, searchYouTube, searchYouTubeMultiple, searchChannelVideos, resolveChannelUrl, fetchChannelVideosBatch, type SearchResult } from './youtubePlayer';
 import type { ChannelBrowser } from './channelBrowser';
+import type { QueueDisplay } from './queueDisplay';
+import { enqueue, removeByPosition, clearQueue, getAll, queueLength } from './queueDb';
 
 export interface StreamController {
   isStreaming: boolean;
@@ -11,12 +13,13 @@ export interface StreamController {
   loopQueue: boolean;
   start(voiceChannel: VoiceChannel, queue: VideoQueue, textChannel: TextChannel): Promise<void>;
   playUrl(voiceChannel: VoiceChannel, url: string, textChannel: TextChannel): Promise<void>;
+  playFromQueue(voiceChannel: VoiceChannel, textChannel: TextChannel): Promise<boolean>;
   toggleLoopTrack(): boolean;
   toggleLoopQueue(): boolean;
   pause(): Promise<boolean>;
   resume(voiceChannel: VoiceChannel): Promise<boolean>;
   stop(): Promise<void>;
-  skip(): Promise<void>;
+  skip(textChannel?: TextChannel): Promise<void>;
 }
 
 export interface CommandHandlerDeps {
@@ -24,6 +27,7 @@ export interface CommandHandlerDeps {
   queue: VideoQueue;
   client: Client;
   browser: ChannelBrowser | null;
+  queueDisplay: QueueDisplay | null;
 }
 
 interface RawMessagePacket {
@@ -36,7 +40,7 @@ interface RawMessagePacket {
 }
 
 export function registerCommandHandler(deps: CommandHandlerDeps): void {
-  const { streamController, queue, client, browser } = deps;
+  const { streamController, queue, client, browser, queueDisplay } = deps;
 
   const GUILD_ID = process.env['GUILD_ID']!;
   const VOICE_CHANNEL_ID = process.env['VOICE_CHANNEL_ID']!;
@@ -54,7 +58,31 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
     } catch { /* ignore */ }
   }
 
+  /** Enqueue a video, fetching its metadata, and notify the user. */
+  async function autoEnqueue(url: string, knownTitle?: string, knownDuration?: string, knownChannel?: string): Promise<void> {
+    let title = knownTitle ?? url;
+    let duration = knownDuration ?? '?';
+    let channel = knownChannel ?? '';
+
+    // Fetch meta if we don't have a title yet
+    if (!knownTitle) {
+      try {
+        const { fetchVideoMeta } = await import('./webhookNotifier');
+        const meta = await fetchVideoMeta(url);
+        if (meta) { title = meta.title; duration = meta.duration; channel = meta.channel; }
+      } catch { /* ignore */ }
+    }
+
+    enqueue({ url, title, duration, channel });
+    if (queueDisplay) queueDisplay.refresh().catch(() => {});
+    await reply(`➕ Added to queue: **${title}**`);
+  }
+
   async function playChosen(chosen: SearchResult): Promise<void> {
+    if (streamController.isStreaming) {
+      await autoEnqueue(chosen.url, chosen.title, chosen.duration, chosen.channel);
+      return;
+    }
     await reply(`▶️ Playing: **${chosen.title}**`);
     try {
       await client.guilds.fetch(GUILD_ID);
@@ -98,6 +126,17 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
                 '`!search-in <keyword>` — filter by keyword',
                 '`!browse-clear` — clear filter',
                 '`!pick <n>` — play video by number',
+              ].join('\n'),
+            },
+            {
+              name: '🎬 Queue',
+              value: [
+                '`!queue-add <url>` — add a video to the queue',
+                '`!queue` — show the queue embed',
+                '`!queue-play` — start playing from queue',
+                '`!queue-next` / `!queue-prev` — navigate queue pages',
+                '`!queue-remove <n>` — remove item by position',
+                '`!queue-clear` — clear the entire queue',
               ].join('\n'),
             },
             {
@@ -246,6 +285,10 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
         await reply('❌ Search failed. Try again.');
         return;
       }
+      if (streamController.isStreaming) {
+        await autoEnqueue(result.url, result.title);
+        return;
+      }
       await reply(`▶️ Playing: **${result.title}**`);
       try {
         await client.guilds.fetch(GUILD_ID);
@@ -305,7 +348,6 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
         await reply('No active search. Use `!search -pick <query>` or `!search -channel <name>` first.');
         return;
       }
-      if (streamController.isStreaming) { await reply('Already streaming. Use `!stop` first.'); return; }
 
       const n = parseInt(content.slice('!pick '.length).trim(), 10);
       if (isNaN(n) || n < 1 || n > results.length) {
@@ -321,11 +363,88 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       return;
     }
 
+    // ── Queue commands ───────────────────────────────────────────────────────
+    if (content === '!queue') {
+      if (queueDisplay) {
+        await queueDisplay.show();
+      } else {
+        const items = getAll();
+        if (items.length === 0) { await reply('Queue is empty.'); return; }
+        const list = items.slice(0, 10).map((item, i) => `**${i + 1}.** ${item.title} \`${item.duration}\``).join('\n');
+        await reply(`**Queue (${items.length} videos)**\n${list}`);
+      }
+      return;
+    }
+
+    if (content === '!queue-next') {
+      if (queueDisplay) { await queueDisplay.next(); }
+      return;
+    }
+
+    if (content === '!queue-prev') {
+      if (queueDisplay) { await queueDisplay.prev(); }
+      return;
+    }
+
+    if (content.startsWith('!queue-remove ')) {
+      const n = parseInt(content.slice('!queue-remove '.length).trim(), 10);
+      if (isNaN(n) || n < 1) { await reply('Usage: `!queue-remove <number>`'); return; }
+      const ok = removeByPosition(n);
+      if (ok) {
+        if (queueDisplay) queueDisplay.refresh().catch(() => {});
+        await reply(`✅ Removed item #${n} from queue.`);
+      } else {
+        await reply(`No item at position ${n}.`);
+      }
+      return;
+    }
+
+    if (content === '!queue-clear') {
+      const count = clearQueue();
+      if (queueDisplay) queueDisplay.refresh().catch(() => {});
+      await reply(`🗑️ Cleared ${count} item${count !== 1 ? 's' : ''} from queue.`);
+      return;
+    }
+
+    if (content.startsWith('!queue-add ')) {
+      const url = content.slice('!queue-add '.length).trim();
+      if (!isYouTubeUrl(url)) { await reply('Invalid URL. Only YouTube links are supported.'); return; }
+      // Fetch title quickly
+      let title = url;
+      let duration = '?';
+      let channel = '';
+      try {
+        const { fetchVideoMeta } = await import('./webhookNotifier');
+        const meta = await fetchVideoMeta(url);
+        if (meta) { title = meta.title; duration = meta.duration; channel = meta.channel; }
+      } catch { /* ignore */ }
+      enqueue({ url, title, duration, channel });
+      if (queueDisplay) queueDisplay.refresh().catch(() => {});
+      await reply(`➕ Added to queue: **${title}**`);
+      return;
+    }
+
+    if (content === '!queue-play') {
+      if (streamController.isStreaming) { await reply('Already streaming. Use `!stop` first.'); return; }
+      if (queueLength() === 0) { await reply('Queue is empty.'); return; }
+      try {
+        await client.guilds.fetch(GUILD_ID);
+        const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
+        const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+        const ok = await streamController.playFromQueue(voiceChannel, textChannel);
+        if (!ok) await reply('Queue is empty.');
+      } catch (err) { console.error('[cmd] !queue-play error:', err); }
+      return;
+    }
+
     // ── Play URL ─────────────────────────────────────────────────────────────
     if (content.startsWith('!play ')) {
       const url = content.slice('!play '.length).trim();
       if (!isYouTubeUrl(url)) { await reply('Invalid URL. Only YouTube links are supported.'); return; }
-      if (streamController.isStreaming) { await reply('Already streaming. Use `!stop` first.'); return; }
+      if (streamController.isStreaming) {
+        await autoEnqueue(url);
+        return;
+      }
       try {
         await client.guilds.fetch(GUILD_ID);
         const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
@@ -372,7 +491,10 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
 
     if (content === '!skip') {
       if (!streamController.isStreaming && !streamController.isPaused) return;
-      await streamController.skip();
+      try {
+        const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+        await streamController.skip(textChannel);
+      } catch { await streamController.skip(); }
       return;
     }
   });

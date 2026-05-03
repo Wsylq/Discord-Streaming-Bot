@@ -7,6 +7,8 @@ import type { StreamController } from './commandHandler';
 import { ENCODER_OPTIONS } from './encoderOptions';
 import { downloadYouTubeVideo, deleteTempFile, type DownloadProgress } from './youtubePlayer';
 import { fetchVideoMeta, type WebhookNotifier } from './webhookNotifier';
+import { dequeue, type QueueItem } from './queueDb';
+import type { QueueDisplay } from './queueDisplay';
 
 interface PauseState {
   filePath: string;
@@ -31,7 +33,11 @@ interface StreamState {
   currentUrl: string | null; // YouTube URL of currently playing video (null for local)
 }
 
-export function createStreamController(streamer: Streamer, notifier: WebhookNotifier | null = null): StreamController {
+export function createStreamController(
+  streamer: Streamer,
+  notifier: WebhookNotifier | null = null,
+  queueDisplay: QueueDisplay | null = null,
+): StreamController {
   const state: StreamState = {
     isStreaming: false,
     isPaused: false,
@@ -277,13 +283,31 @@ export function createStreamController(streamer: Streamer, notifier: WebhookNoti
             state.abortController = null;
             if (completed) {
               console.log('[stream] YouTube stream finished.');
-              try { await textChannel.send('✅ Done. Send `!play` to queue another.'); } catch { /* ignore */ }
+              // Auto-play next item from persistent queue
+              const next = dequeue();
+              if (next && state.voiceChannel) {
+                if (queueDisplay) queueDisplay.refresh().catch(() => {});
+                console.log(`[queue] Auto-playing next: ${next.title}`);
+                try { await textChannel.send(`▶️ Next up: **${next.title}**`); } catch { /* ignore */ }
+                state.isStreaming = false; // reset so playUrl can run
+                await controller.playUrl(state.voiceChannel, next.url, textChannel);
+              } else {
+                try { await textChannel.send('✅ Done. Queue is empty.'); } catch { /* ignore */ }
+              }
             }
           }
         }
       };
 
       await playLoop();
+    },
+
+    async playFromQueue(voiceChannel: VoiceChannel, textChannel: TextChannel): Promise<boolean> {
+      const next = dequeue();
+      if (!next) return false;
+      if (queueDisplay) queueDisplay.refresh().catch(() => {});
+      await controller.playUrl(voiceChannel, next.url, textChannel);
+      return true;
     },
 
     toggleLoopTrack(): boolean {
@@ -403,7 +427,7 @@ export function createStreamController(streamer: Streamer, notifier: WebhookNoti
       }
     },
 
-    async skip(): Promise<void> {
+    async skip(textChannel?: TextChannel): Promise<void> {
       if (!state.isStreaming && !state.isPaused) return;
 
       if (state.abortController) {
@@ -415,14 +439,32 @@ export function createStreamController(streamer: Streamer, notifier: WebhookNoti
       state.loopTrack = false;
 
       cleanupTempFile();
-      // Keep loopTempFile if loopQueue is on and it's a YouTube video
       if (!state.loopQueue) cleanupLoopTempFile();
 
       state.pause = null;
       state.isPaused = false;
 
+      // Helper: try to play next from DB queue
+      const tryDbQueue = async (): Promise<boolean> => {
+        if (!textChannel || !state.voiceChannel) {
+          console.log(`[queue] tryDbQueue skipped: textChannel=${!!textChannel} voiceChannel=${!!state.voiceChannel}`);
+          return false;
+        }
+        const next = dequeue();
+        if (!next) return false;
+        if (queueDisplay) queueDisplay.refresh().catch(() => {});
+        console.log(`[queue] Skip → playing next from queue: ${next.title}`);
+        try { await textChannel.send(`▶️ Next up: **${next.title}**`); } catch { /* ignore */ }
+        // Brief wait for the aborted stream to fully clean up
+        await new Promise(r => setTimeout(r, 300));
+        await controller.playUrl(state.voiceChannel, next.url, textChannel);
+        return true;
+      };
+
+      // If no local file queue, check DB queue
       if (!state.queue) {
         state.isStreaming = false;
+        await tryDbQueue();
         return;
       }
 
@@ -438,7 +480,9 @@ export function createStreamController(streamer: Streamer, notifier: WebhookNoti
         } else {
           state.isStreaming = false;
           state.queue = null;
-          console.log('[stream] Queue complete after skip.');
+          // Local queue exhausted — try DB queue
+          const played = await tryDbQueue();
+          if (!played) console.log('[stream] Queue complete after skip.');
         }
         return;
       }
