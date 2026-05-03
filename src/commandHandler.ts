@@ -18,6 +18,10 @@ export interface StreamController {
   playAudio(voiceChannel: VoiceChannel, url: string, textChannel: TextChannel): Promise<void>;
   toggleAudioMode(): boolean;
   readonly audioMode: boolean;
+  toggleLoopAudioTrack(): boolean;
+  toggleLoopAudioQueue(): boolean;
+  readonly loopAudioTrack: boolean;
+  readonly loopAudioQueue: boolean;
   playFromQueue(voiceChannel: VoiceChannel, textChannel: TextChannel): Promise<boolean>;
   toggleLoopTrack(): boolean;
   toggleLoopQueue(): boolean;
@@ -187,6 +191,8 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
                 '`!aq` — show audio queue',
                 '`!aq-next` / `!aq-prev` — navigate audio queue pages',
                 '`!aq-remove <n>` / `!aq-clear` — manage audio queue',
+                '`!loop-audio` — loop current audio track',
+                '`!loop-audio-queue` — loop entire audio queue',
               ].join('\n'),
             },
             {
@@ -646,6 +652,18 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       const count = audioClearQueue();
       if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
       await reply(`🗑️ Cleared ${count} audio item${count !== 1 ? 's' : ''}.`);
+      return;
+    }
+
+    if (content === '!loop-audio') {
+      const on = streamController.toggleLoopAudioTrack();
+      await reply(on ? '🔂 Audio loop track **on**.' : '🔂 Audio loop track **off**.');
+      return;
+    }
+
+    if (content === '!loop-audio-queue') {
+      const on = streamController.toggleLoopAudioQueue();
+      await reply(on ? '🔁 Audio loop queue **on**.' : '🔁 Audio loop queue **off**.');
       return;
     }
 

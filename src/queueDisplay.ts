@@ -42,11 +42,8 @@ export class QueueDisplay {
   async show(): Promise<void> {
     this.page = 0;
     const embed = buildEmbed(this.page);
-    if (this.messageId) {
-      await webhookRequest(this.webhookUrl, 'PATCH', this.messageId, embed);
-    } else {
-      this.messageId = await webhookRequest(this.webhookUrl, 'POST', null, embed);
-    }
+    // Always POST a new message so it appears at the bottom of chat
+    this.messageId = await webhookRequest(this.webhookUrl, 'POST', null, embed);
   }
 
   async refresh(): Promise<void> {

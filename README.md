@@ -19,10 +19,12 @@ A Discord selfbot that streams video directly into voice channels. Point it at a
 - [x] Add Help Command -- Trying embed, if no perms then bot will send msg saying no perms.
 - [x] Add Audio-Only-Mode to provide highest quality audio
    - [ ] Add Lyrics - Optional
-   - [ ] Add Loop
+   - [x] Add Loop
    - [x] Add Search
+   - [ ] Add Skip
 - [ ] Add Dashboard - Optional
 - [x] Search command Optimizations
+- [ ] Improve the Help Command Embed
 
 ## Setup
 
