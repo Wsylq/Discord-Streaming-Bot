@@ -6,8 +6,11 @@ import type { VideoQueue } from './videoQueue';
 import type { StreamController } from './commandHandler';
 import { ENCODER_OPTIONS } from './encoderOptions';
 import { downloadYouTubeVideo, deleteTempFile, type DownloadProgress } from './youtubePlayer';
+import { downloadAudio, deleteAudioFile, isSpotifyUrl, resolveSpotifyTracks, searchYouTubeMusic } from './audioMode';
+import { audioDequeue, audioEnqueue, audioGetAll, audioQueueLength, type AudioQueueItem } from './audioQueueDb';
+import type { AudioQueueDisplay } from './audioQueueDisplay';
 import { fetchVideoMeta, type WebhookNotifier } from './webhookNotifier';
-import { dequeue, type QueueItem } from './queueDb';
+import { dequeue, enqueue, type QueueItem } from './queueDb';
 import type { QueueDisplay } from './queueDisplay';
 
 interface PauseState {
@@ -22,6 +25,7 @@ interface StreamState {
   isStreaming: boolean;
   isPaused: boolean;
   isInVoice: boolean;
+  audioMode: boolean;      // when true, all plays go through audio pipeline
   loopTrack: boolean;
   loopQueue: boolean;
   abortController: AbortController | null;
@@ -37,11 +41,13 @@ export function createStreamController(
   streamer: Streamer,
   notifier: WebhookNotifier | null = null,
   queueDisplay: QueueDisplay | null = null,
+  audioQueueDisplay: AudioQueueDisplay | null = null,
 ): StreamController {
   const state: StreamState = {
     isStreaming: false,
     isPaused: false,
     isInVoice: false,
+    audioMode: false,
     loopTrack: false,
     loopQueue: false,
     abortController: null,
@@ -309,6 +315,149 @@ export function createStreamController(
       await controller.playUrl(voiceChannel, next.url, textChannel);
       return true;
     },
+
+    async playAudio(voiceChannel: VoiceChannel, url: string, textChannel: TextChannel): Promise<void> {
+      if (state.isStreaming) return;
+
+      const joined = await joinVoice(voiceChannel);
+      if (!joined) return;
+
+      state.isStreaming = true;
+      state.isPaused = false;
+
+      const abort = new AbortController();
+      state.abortController = abort;
+
+      // Resolve Spotify → YouTube Music via yt-dlp (no API key needed)
+      let resolvedUrl = url;
+      if (isSpotifyUrl(url)) {
+        try {
+          await textChannel.send('🎵 Resolving Spotify track...');
+          const tracks = await resolveSpotifyTracks(url, abort.signal);
+          if (tracks.length === 0) throw new Error('No tracks found');
+
+          if (tracks.length === 1) {
+            await textChannel.send(`🔍 Searching for **${tracks[0].searchQuery}**...`);
+            const result = await searchYouTubeMusic(tracks[0].searchQuery, abort.signal);
+            resolvedUrl = result.url;
+          } else {
+            // Album/playlist — enqueue rest, play first
+            await textChannel.send(`📀 Found **${tracks.length} tracks**. Queueing...`);
+            for (let i = 1; i < tracks.length; i++) {
+              const result = await searchYouTubeMusic(tracks[i].searchQuery, abort.signal).catch(() => null);
+              if (result) audioEnqueue({ url: result.url, title: tracks[i].title, duration: result.duration, artist: tracks[i].artist });
+            }
+            if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+            const first = await searchYouTubeMusic(tracks[0].searchQuery, abort.signal);
+            resolvedUrl = first.url;
+          }
+        } catch (err: unknown) {
+          state.isStreaming = false;
+          const msg = err instanceof Error ? err.message : 'Unknown error';
+          try { await textChannel.send(`❌ Spotify error: ${msg}`); } catch { /* ignore */ }
+          return;
+        }
+      }
+
+      // Check audio queue for a pre-downloaded file for this URL
+      let audioFile: string;
+      let ownFile = true;
+      const allAudio = audioGetAll();
+      const preloaded = allAudio.find(i => i.url === resolvedUrl && i.downloadStatus === 'ready' && i.cachedFile);
+      if (preloaded?.cachedFile) {
+        audioFile = preloaded.cachedFile;
+        ownFile = false; // audioQueueDb owns this file
+        console.log(`[audio] Using pre-downloaded file for: ${preloaded.title}`);
+      } else {
+        // Download now
+        try {
+          await textChannel.send('⬇️ Downloading audio...');
+          audioFile = await downloadAudio(
+            resolvedUrl,
+            (p) => console.log(`[audio] ${p.percent.toFixed(1)}% at ${p.speed} ETA ${p.eta}`),
+            abort.signal,
+          );
+        } catch (err: unknown) {
+          state.isStreaming = false;
+          if (err instanceof Error && err.message?.includes('aborted')) return;
+          console.error('[audio] Download error:', err);
+          try { await textChannel.send('❌ Audio download failed.'); } catch { /* ignore */ }
+          return;
+        }
+      }
+
+      if (abort.signal.aborted || !state.isStreaming) {
+        if (ownFile) deleteAudioFile(audioFile);
+        return;
+      }
+
+      console.log(`[audio] Playing: ${audioFile}`);
+      try { await textChannel.send('🎵 Now playing audio...'); } catch { /* ignore */ }
+
+      state.pause = { filePath: audioFile, isTempFile: true, seekSeconds: 0, startedAt: Date.now(), baseSeconds: 0 };
+
+      try {
+        const { PassThrough } = await import('stream');
+        const { spawn: spawnFfmpeg } = await import('child_process');
+
+        const ffmpegBin = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+        const output = new PassThrough();
+
+        const ffmpegArgs = [
+          '-i', audioFile,
+          '-f', 'lavfi', '-i', 'color=c=black:s=2x2:r=1',
+          '-map', '0:a:0',
+          '-map', '1:v:0',
+          '-c:a', 'libopus', '-b:a', '320k', '-ar', '48000', '-ac', '2',
+          '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+          '-b:v', '10k', '-r', '1', '-pix_fmt', 'yuv420p',
+          '-shortest',
+          '-f', 'nut', 'pipe:1',
+        ];
+
+        const ffmpegProc = spawnFfmpeg(ffmpegBin, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+        ffmpegProc.stdout?.pipe(output);
+        ffmpegProc.stderr?.on('data', (chunk: Buffer) => {
+          const msg = chunk.toString().trim();
+          if (msg && !msg.includes('frame=') && !msg.includes('size=')) console.error('[ffmpeg audio]', msg.split('\n')[0]);
+        });
+        abort.signal.addEventListener('abort', () => { ffmpegProc.kill('SIGKILL'); }, { once: true });
+        const ffmpegDone = new Promise<void>((res) => { ffmpegProc.on('close', () => res()); ffmpegProc.on('error', () => res()); });
+
+        await playStream(output, streamer, { type: 'camera', readrateInitialBurst: 10 }, abort.signal);
+        if (state.pause) state.pause = { ...state.pause, startedAt: Date.now() };
+        await ffmpegDone;
+      } catch (err: unknown) {
+        if (!(err instanceof Error && (err.name === 'AbortError' || err.message?.includes('aborted')))) {
+          console.error('[audio] Stream error:', err);
+        }
+      } finally {
+        if (ownFile) deleteAudioFile(audioFile);
+      }
+
+      if (!state.isPaused) {
+        state.pause = null;
+        state.isStreaming = false;
+        state.abortController = null;
+        // Auto-play next from audio queue
+        const next = audioDequeue();
+        if (next && state.voiceChannel) {
+          if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+          try { await textChannel.send(`🎵 Next up: **${next.title}**`); } catch { /* ignore */ }
+          await controller.playAudio(state.voiceChannel, next.url, textChannel);
+        } else {
+          try { await textChannel.send('✅ Audio finished. Queue is empty.'); } catch { /* ignore */ }
+        }
+      }
+    },
+
+    toggleAudioMode(): boolean {
+      state.audioMode = !state.audioMode;
+      console.log(`[stream] Audio mode: ${state.audioMode}`);
+      return state.audioMode;
+    },
+
+    get audioMode() { return state.audioMode; },
 
     toggleLoopTrack(): boolean {
       state.loopTrack = !state.loopTrack;

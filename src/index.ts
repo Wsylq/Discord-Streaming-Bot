@@ -7,6 +7,8 @@ import { registerCommandHandler } from './commandHandler';
 import { WebhookNotifier } from './webhookNotifier';
 import { ChannelBrowser } from './channelBrowser';
 import { QueueDisplay } from './queueDisplay';
+import { AudioQueueDisplay } from './audioQueueDisplay';
+import { startPredownloader } from './audioMode';
 
 process.on('uncaughtException', (err: Error) => {
   // SRTP errors from node-datachannel are non-fatal — the stream ended
@@ -37,9 +39,13 @@ async function main(): Promise<void> {
   const notifier = config.webhookUrl ? new WebhookNotifier(config.webhookUrl) : null;
   const browser = config.webhookUrl ? new ChannelBrowser(config.webhookUrl) : null;
   const queueDisplay = config.webhookUrl ? new QueueDisplay(config.webhookUrl) : null;
-  const streamController = createStreamController(streamer, notifier, queueDisplay);
+  const audioQueueDisplay = config.webhookUrl ? new AudioQueueDisplay(config.webhookUrl) : null;
+  const streamController = createStreamController(streamer, notifier, queueDisplay, audioQueueDisplay);
 
-  registerCommandHandler({ streamController, queue, client, browser, queueDisplay });
+  registerCommandHandler({ streamController, queue, client, browser, queueDisplay, audioQueueDisplay });
+
+  // Start background audio pre-downloader
+  startPredownloader();
 
   client.on('ready', () => {
     console.log(`Selfbot ready. Logged in as ${client.user?.username ?? 'unknown'}.`);

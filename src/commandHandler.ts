@@ -3,7 +3,9 @@ import type { VideoQueue } from './videoQueue';
 import { isYouTubeUrl, searchYouTube, searchYouTubeMultiple, searchChannelVideos, resolveChannelUrl, fetchChannelVideosBatch, type SearchResult } from './youtubePlayer';
 import type { ChannelBrowser } from './channelBrowser';
 import type { QueueDisplay } from './queueDisplay';
+import type { AudioQueueDisplay } from './audioQueueDisplay';
 import { enqueue, removeByPosition, clearQueue, getAll, queueLength } from './queueDb';
+import { audioEnqueue, audioRemoveByPosition, audioClearQueue, audioGetAll, audioQueueLength } from './audioQueueDb';
 
 export interface StreamController {
   isStreaming: boolean;
@@ -13,6 +15,9 @@ export interface StreamController {
   loopQueue: boolean;
   start(voiceChannel: VoiceChannel, queue: VideoQueue, textChannel: TextChannel): Promise<void>;
   playUrl(voiceChannel: VoiceChannel, url: string, textChannel: TextChannel): Promise<void>;
+  playAudio(voiceChannel: VoiceChannel, url: string, textChannel: TextChannel): Promise<void>;
+  toggleAudioMode(): boolean;
+  readonly audioMode: boolean;
   playFromQueue(voiceChannel: VoiceChannel, textChannel: TextChannel): Promise<boolean>;
   toggleLoopTrack(): boolean;
   toggleLoopQueue(): boolean;
@@ -28,6 +33,7 @@ export interface CommandHandlerDeps {
   client: Client;
   browser: ChannelBrowser | null;
   queueDisplay: QueueDisplay | null;
+  audioQueueDisplay: AudioQueueDisplay | null;
 }
 
 interface RawMessagePacket {
@@ -40,7 +46,7 @@ interface RawMessagePacket {
 }
 
 export function registerCommandHandler(deps: CommandHandlerDeps): void {
-  const { streamController, queue, client, browser, queueDisplay } = deps;
+  const { streamController, queue, client, browser, queueDisplay, audioQueueDisplay } = deps;
 
   const GUILD_ID = process.env['GUILD_ID']!;
   const VOICE_CHANNEL_ID = process.env['VOICE_CHANNEL_ID']!;
@@ -129,6 +135,17 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
               ].join('\n'),
             },
             {
+              name: '🎵 Audio Mode',
+              value: [
+                '`!audio-mode` — toggle audio-only mode (all plays become audio)',
+                '`!audio <url>` — play audio directly (YouTube, Spotify, SoundCloud, etc.)',
+                '`!aq` — show audio queue',
+                '`!aq-next` / `!aq-prev` — navigate audio queue pages',
+                '`!aq-remove <n>` — remove from audio queue',
+                '`!aq-clear` — clear audio queue',
+              ].join('\n'),
+            },
+            {
               name: '🎬 Queue',
               value: [
                 '`!queue-add <url>` — add a video to the queue',
@@ -143,6 +160,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
               name: '▶️ Playback',
               value: [
                 '`!play <url>` — stream a YouTube video',
+                '`!audio <url>` — audio-only mode (YouTube, Spotify, SoundCloud, etc.)',
                 '`!start` — stream from local folder',
                 '`!pause` / `!resume` — pause and resume',
                 '`!skip` — skip to next',
@@ -437,6 +455,82 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       return;
     }
 
+    // ── Audio mode toggle ────────────────────────────────────────────────────
+    if (content === '!audio-mode') {
+      const on = streamController.toggleAudioMode();
+      await reply(on
+        ? '🎵 Audio mode **ON** — all plays will be audio-only at max quality.'
+        : '🎵 Audio mode **OFF** — back to video streaming.'
+      );
+      return;
+    }
+
+    // ── Audio mode commands ──────────────────────────────────────────────────
+    if (content.startsWith('!audio ')) {
+      const url = content.slice('!audio '.length).trim();
+      if (!url) { await reply('Usage: `!audio <url>` — YouTube, Spotify, SoundCloud, etc.'); return; }
+      if (streamController.isStreaming) {
+        // Auto-enqueue to audio queue
+        audioEnqueue({ url, title: url, duration: '?', artist: '' });
+        if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+        await reply(`➕ Added to audio queue.`);
+        return;
+      }
+      try {
+        await client.guilds.fetch(GUILD_ID);
+        const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
+        const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+        await streamController.playAudio(voiceChannel, url, textChannel);
+      } catch (err) { console.error('[cmd] !audio error:', err); }
+      return;
+    }
+
+    // ── Audio queue commands ─────────────────────────────────────────────────
+    if (content === '!aq') {
+      if (audioQueueDisplay) {
+        await audioQueueDisplay.show();
+      } else {
+        const items = audioGetAll();
+        if (items.length === 0) { await reply('Audio queue is empty.'); return; }
+        const list = items.slice(0, 10).map((item, i) => `**${i + 1}.** ${item.title} \`${item.duration}\``).join('\n');
+        await reply(`**Audio Queue (${items.length} tracks)**\n${list}`);
+      }
+      return;
+    }
+
+    if (content === '!aq-next') {
+      if (audioQueueDisplay) await audioQueueDisplay.next();
+      return;
+    }
+
+    if (content === '!aq-prev') {
+      if (audioQueueDisplay) await audioQueueDisplay.prev();
+      return;
+    }
+
+    if (content.startsWith('!aq-remove ')) {
+      const n = parseInt(content.slice('!aq-remove '.length).trim(), 10);
+      if (isNaN(n) || n < 1) { await reply('Usage: `!aq-remove <number>`'); return; }
+      const ok = audioRemoveByPosition(n);
+      if (ok) {
+        if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+        await reply(`✅ Removed audio item #${n}.`);
+      } else {
+        await reply(`No item at position ${n}.`);
+      }
+      return;
+    }
+
+    if (content === '!aq-clear') {
+      const count = audioClearQueue();
+      if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+      await reply(`🗑️ Cleared ${count} audio item${count !== 1 ? 's' : ''}.`);
+      return;
+    }
+
+    // ── Audio mode: intercept !play and !search when audio mode is on ────────
+    // (handled below by checking streamController.audioMode before playUrl)
+
     // ── Play URL ─────────────────────────────────────────────────────────────
     if (content.startsWith('!play ')) {
       const url = content.slice('!play '.length).trim();
@@ -449,7 +543,11 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
         await client.guilds.fetch(GUILD_ID);
         const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
         const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
-        await streamController.playUrl(voiceChannel, url, textChannel);
+        if (streamController.audioMode) {
+          await streamController.playAudio(voiceChannel, url, textChannel);
+        } else {
+          await streamController.playUrl(voiceChannel, url, textChannel);
+        }
       } catch (err) { console.error('[cmd] !play error:', err); }
       return;
     }

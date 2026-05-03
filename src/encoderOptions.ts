@@ -28,7 +28,30 @@ export const ENCODER_OPTIONS = {
   ],
 };
 
-// Low quality fallback — 240p @ 15fps for slow machines or poor upload
+// Audio-only mode — highest quality audio, minimal silent video
+// The video stream is a 2x2 black frame at 1fps (minimum Discord accepts)
+// All bandwidth goes to audio quality
+export const ENCODER_OPTIONS_AUDIO_ONLY = {
+  encoder: Encoders.software({ x264: sharedX264 }),
+  width: 2,
+  height: 2,
+  frameRate: 1,
+  bitrateVideo: 10,
+  bitrateVideoMax: 20,
+  bitrateAudio: 320,   // maximum opus quality
+  videoCodec: 'H264' as const,
+  includeAudio: true,
+  hardwareAcceleratedDecoding: false,
+  minimizeLatency: true,
+  noTranscoding: false,
+  customHeaders: {},
+  customInputOptions: [],
+  customFfmpegFlags: [
+    '-af', 'aresample=async=1000',
+    '-vsync', 'cfr',
+    '-g', '1',
+  ],
+};
 // Usage: import { ENCODER_OPTIONS_LOW_QUALITY as ENCODER_OPTIONS } from './encoderOptions'
 export const ENCODER_OPTIONS_LOW_QUALITY = {
   encoder: Encoders.software({ x264: sharedX264 }),
