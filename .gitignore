@@ -3,6 +3,7 @@
 
 # Dependencies
 node_modules/
+Dockerfile
 
 # Build output
 dist/

@@ -4,6 +4,7 @@ import { loadConfig } from './config';
 import { buildQueue, isEmpty } from './videoQueue';
 import { createStreamController } from './streamController';
 import { registerCommandHandler } from './commandHandler';
+import { WebhookNotifier } from './webhookNotifier';
 
 process.on('uncaughtException', (err: Error) => {
   // SRTP errors from node-datachannel are non-fatal — the stream ended
@@ -31,7 +32,8 @@ async function main(): Promise<void> {
   });
 
   const streamer = new Streamer(client);
-  const streamController = createStreamController(streamer);
+  const notifier = config.webhookUrl ? new WebhookNotifier(config.webhookUrl) : null;
+  const streamController = createStreamController(streamer, notifier);
 
   registerCommandHandler({ streamController, queue, client });
 

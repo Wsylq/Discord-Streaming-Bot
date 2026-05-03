@@ -3,8 +3,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 export interface AppConfig {
-  token: string;       // Discord user account token
-  videoFolder: string; // Absolute path to video directory (resolved at startup)
+  token: string;
+  videoFolder: string;
+  webhookUrl: string | null;
 }
 
 export function loadConfig(): AppConfig {
@@ -35,5 +36,5 @@ export function loadConfig(): AppConfig {
     process.exit(1);
   }
 
-  return { token, videoFolder };
+  return { token, videoFolder, webhookUrl: process.env['WEBHOOK_URL'] ?? null };
 }

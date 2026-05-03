@@ -6,6 +6,7 @@ import type { VideoQueue } from './videoQueue';
 import type { StreamController } from './commandHandler';
 import { ENCODER_OPTIONS } from './encoderOptions';
 import { downloadYouTubeVideo, deleteTempFile, type DownloadProgress } from './youtubePlayer';
+import { fetchVideoMeta, type WebhookNotifier } from './webhookNotifier';
 
 interface PauseState {
   filePath: string;
@@ -19,18 +20,18 @@ interface StreamState {
   isStreaming: boolean;
   isPaused: boolean;
   isInVoice: boolean;
-  loopTrack: boolean;      // loop current track
-  loopQueue: boolean;      // loop entire queue
+  loopTrack: boolean;
+  loopQueue: boolean;
   abortController: AbortController | null;
   queue: VideoQueue | null;
   pause: PauseState | null;
-  // For YouTube loop: keep the downloaded file alive across loops
   loopTempFile: string | null;
   loopUrl: string | null;
-  voiceChannel: VoiceChannel | null; // last joined channel, for loop rejoin
+  voiceChannel: VoiceChannel | null;
+  currentUrl: string | null; // YouTube URL of currently playing video (null for local)
 }
 
-export function createStreamController(streamer: Streamer): StreamController {
+export function createStreamController(streamer: Streamer, notifier: WebhookNotifier | null = null): StreamController {
   const state: StreamState = {
     isStreaming: false,
     isPaused: false,
@@ -43,6 +44,7 @@ export function createStreamController(streamer: Streamer): StreamController {
     loopTempFile: null,
     loopUrl: null,
     voiceChannel: null,
+    currentUrl: null,
   };
 
   function cleanupTempFile(): void {
@@ -84,6 +86,7 @@ export function createStreamController(streamer: Streamer): StreamController {
     filePath: string,
     isTempFile: boolean,
     seekSeconds = 0,
+    meta?: import('./webhookNotifier').VideoMeta,
   ): Promise<boolean> {
     const abort = new AbortController();
     state.abortController = abort;
@@ -92,29 +95,36 @@ export function createStreamController(streamer: Streamer): StreamController {
     const options = { ...ENCODER_OPTIONS, customInputOptions: seekInputOptions };
 
     // Set startedAt AFTER prepareStream+playStream are ready, not before.
-    // This avoids counting ffmpeg startup time (~1-2s) as elapsed playback.
-    // We use a flag to mark when actual playback begins.
-    let playbackStarted = false;
-
     state.pause = {
       filePath,
       isTempFile,
       seekSeconds,
-      startedAt: Date.now(), // will be corrected once playback actually starts
+      startedAt: Date.now(),
       baseSeconds: seekSeconds,
     };
 
     try {
       const { output, promise } = prepareStream(filePath, options, abort.signal);
 
-      // playStream resolves once the stream connection is established and
-      // frames start flowing — that's when we reset the clock
-      await playStream(output, streamer, { type: 'camera', readrateInitialBurst: 10 }, abort.signal);
-      playbackStarted = true;
+      // Fire webhook notifier immediately — don't wait for playStream to resolve
+      if (notifier && meta) {
+        console.log('[webhook] Firing notifier.start()...');
+        notifier.start(meta, seekSeconds).then(() => {
+          console.log('[webhook] Embed sent successfully.');
+        }).catch((err) => {
+          console.warn('[webhook] Failed to send embed:', err);
+        });
+      }
 
-      // Reset the clock now that frames are actually being sent
+      await playStream(output, streamer, { type: 'camera', readrateInitialBurst: 10 }, abort.signal);
+
+      // Reset the clock now that frames are actually flowing
       if (state.pause) {
         state.pause = { ...state.pause, startedAt: Date.now() };
+      }
+      // Also sync the notifier's clock
+      if (notifier) {
+        notifier.resetClock();
       }
 
       await promise;
@@ -238,9 +248,15 @@ export function createStreamController(streamer: Streamer): StreamController {
       }
 
       console.log('[stream] Playing downloaded file...');
+      state.currentUrl = url;
+
+      // Fetch metadata now so the embed fires immediately when playback starts
+      const meta = notifier ? await fetchVideoMeta(url).catch(() => null) : null;
+      if (meta) console.log(`[webhook] Got meta: "${meta.title}" by ${meta.channel}`);
+      else if (notifier) console.warn('[webhook] fetchVideoMeta returned null');
 
       const playLoop = async (): Promise<void> => {
-        const completed = await playFile(tmpFile, true);
+        const completed = await playFile(tmpFile, true, 0, meta ?? undefined);
 
         if (!state.isPaused && state.isStreaming) {
           if (completed && state.loopTrack) {
@@ -305,6 +321,7 @@ export function createStreamController(streamer: Streamer): StreamController {
       try { streamer.leaveVoice(); } catch { /* ignore */ }
       state.isInVoice = false;
 
+      if (notifier) notifier.pause(seekSeconds).catch(() => {});
       console.log(`[stream] Paused at ${seekSeconds.toFixed(1)}s`);
       return true;
     },
@@ -318,6 +335,8 @@ export function createStreamController(streamer: Streamer): StreamController {
       state.isStreaming = true;
 
       console.log(`[stream] Resuming from ${seekSeconds.toFixed(1)}s`);
+
+      if (notifier) notifier.resume(seekSeconds).catch(() => {});
 
       // isInVoice is already false (we left on pause), so joinVoice
       // goes straight to joining without the leave+wait cycle
@@ -372,6 +391,9 @@ export function createStreamController(streamer: Streamer): StreamController {
       state.loopQueue = false;
       state.queue = null;
       state.pause = null;
+      state.currentUrl = null;
+
+      if (notifier) notifier.stop();
 
       if (state.isInVoice) {
         try { streamer.stopStream(); } catch { /* ignore */ }
