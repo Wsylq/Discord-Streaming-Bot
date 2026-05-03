@@ -19,7 +19,6 @@ export function isYouTubeUrl(input: string): boolean {
 
 /**
  * Searches YouTube for a query and returns the URL of the top result.
- * Uses yt-dlp's ytsearch: prefix — no API key needed.
  */
 export function searchYouTube(query: string, abortSignal: AbortSignal): Promise<{ url: string; title: string }> {
   return new Promise((resolve, reject) => {
@@ -28,17 +27,14 @@ export function searchYouTube(query: string, abortSignal: AbortSignal): Promise<
       [
         '--js-runtimes', 'node',
         '--no-warnings',
+        '--flat-playlist',
         '--print', '%(webpage_url)s\t%(title)s',
-        '--no-playlist',
         `ytsearch1:${query}`,
       ],
       { shell: false, stdio: ['ignore', 'pipe', 'pipe'] },
     );
 
-    abortSignal.addEventListener('abort', () => {
-      proc.kill('SIGKILL');
-      reject(new Error('Search aborted'));
-    }, { once: true });
+    abortSignal.addEventListener('abort', () => { proc.kill('SIGKILL'); reject(new Error('Search aborted')); }, { once: true });
 
     let output = '';
     proc.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
@@ -84,17 +80,14 @@ export function searchYouTubeMultiple(
       [
         '--js-runtimes', 'node',
         '--no-warnings',
+        '--flat-playlist',
         '--print', '%(webpage_url)s\t%(title)s\t%(duration_string)s\t%(channel)s',
-        '--no-playlist',
         `ytsearch${count}:${query}`,
       ],
       { shell: false, stdio: ['ignore', 'pipe', 'pipe'] },
     );
 
-    abortSignal.addEventListener('abort', () => {
-      proc.kill('SIGKILL');
-      reject(new Error('Search aborted'));
-    }, { once: true });
+    abortSignal.addEventListener('abort', () => { proc.kill('SIGKILL'); reject(new Error('Search aborted')); }, { once: true });
 
     let output = '';
     proc.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
@@ -108,9 +101,7 @@ export function searchYouTubeMultiple(
       if (code !== 0) { reject(new Error(`yt-dlp search failed (code ${code})`)); return; }
 
       const results: SearchResult[] = output
-        .trim()
-        .split('\n')
-        .filter(Boolean)
+        .trim().split('\n').filter(Boolean)
         .map(line => {
           const [url, title, duration, channel] = line.split('\t');
           return { url: url ?? '', title: title ?? url ?? '', duration: duration ?? '?', channel: channel ?? '?' };
@@ -126,6 +117,7 @@ export function searchYouTubeMultiple(
 
 /**
  * Resolves a channel name to its uploads URL and display name.
+ * Uses --flat-playlist for speed — reads playlist index only.
  */
 export function resolveChannelUrl(
   channelName: string,
@@ -137,8 +129,8 @@ export function resolveChannelUrl(
       [
         '--js-runtimes', 'node',
         '--no-warnings',
+        '--flat-playlist',
         '--print', '%(channel_url)s\t%(channel)s',
-        '--no-playlist',
         '--playlist-items', '1',
         `ytsearch1:${channelName}`,
       ],

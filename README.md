@@ -20,7 +20,7 @@ A Discord selfbot that streams video directly into voice channels. Point it at a
 - [ ] Add Audio-Only-Mode to provide highest quality audio
    - [ ] Add Lyrics
 - [ ] Add Dashboard - Optional
-- [ ] Search command Optimizations
+- [x] Search command Optimizations
 
 ## Setup
 
