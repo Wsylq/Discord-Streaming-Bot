@@ -1,6 +1,6 @@
 # Discord Video Selfbot - Wsylq
 
-Stream local video files to Discord voice channels.
+A Discord selfbot that streams video directly into voice channels. Point it at a local folder or hand it a YouTube link — it handles the rest. Search YouTube, browse a channel's latest uploads, pick from results, pause, resume, loop, skip. All controlled through simple chat commands.
 
 ## TODO
 
@@ -12,8 +12,10 @@ Stream local video files to Discord voice channels.
 - [ ] Add Queue
    - [ ] Persistent Queues
 - [x] Add Now-playing and Duration
+   - [ ] Make it Sticky Message
 - [x] Add Search, with Pick arguments
    - [x] Add Channel Videos Search
+      - [ ] Make it via an Embed to Search (type) and Browse (buttons) videos there
 - [x] Add Help Command -- Trying embed, if no perms then bot will send msg saying no perms.
 - [ ] Add Audio-Only-Mode to provide highest quality audio
    - [ ] Add Lyrics
