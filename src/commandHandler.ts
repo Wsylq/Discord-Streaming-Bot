@@ -84,9 +84,30 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
     await reply(`➕ Added to queue: **${title}**`);
   }
 
+  /** Enqueue to audio queue with metadata fetch. */
+  async function autoAudioEnqueue(url: string, knownTitle?: string, knownDuration?: string, knownArtist?: string): Promise<void> {
+    let title = knownTitle ?? url;
+    let duration = knownDuration ?? '?';
+    let artist = knownArtist ?? '';
+    if (!knownTitle) {
+      try {
+        const { fetchVideoMeta } = await import('./webhookNotifier');
+        const meta = await fetchVideoMeta(url);
+        if (meta) { title = meta.title; duration = meta.duration; artist = meta.channel; }
+      } catch { /* ignore */ }
+    }
+    audioEnqueue({ url, title, duration, artist });
+    if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+    await reply(`🎵 Added to audio queue: **${title}**`);
+  }
+
   async function playChosen(chosen: SearchResult): Promise<void> {
     if (streamController.isStreaming) {
-      await autoEnqueue(chosen.url, chosen.title, chosen.duration, chosen.channel);
+      if (streamController.audioMode) {
+        await autoAudioEnqueue(chosen.url, chosen.title, chosen.duration, chosen.channel);
+      } else {
+        await autoEnqueue(chosen.url, chosen.title, chosen.duration, chosen.channel);
+      }
       return;
     }
     await reply(`▶️ Playing: **${chosen.title}**`);
@@ -94,9 +115,30 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       await client.guilds.fetch(GUILD_ID);
       const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
       const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
-      await streamController.playUrl(voiceChannel, chosen.url, textChannel);
+      if (streamController.audioMode) {
+        await streamController.playAudio(voiceChannel, chosen.url, textChannel);
+      } else {
+        await streamController.playUrl(voiceChannel, chosen.url, textChannel);
+      }
     } catch (err) {
       console.error('[cmd] playChosen error:', err);
+    }
+  }
+
+  /** Always plays/queues as audio regardless of audio mode flag. */
+  async function playChosenAudio(chosen: SearchResult): Promise<void> {
+    if (streamController.isStreaming) {
+      await autoAudioEnqueue(chosen.url, chosen.title, chosen.duration, chosen.channel);
+      return;
+    }
+    await reply(`🎵 Playing: **${chosen.title}**`);
+    try {
+      await client.guilds.fetch(GUILD_ID);
+      const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
+      const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+      await streamController.playAudio(voiceChannel, chosen.url, textChannel);
+    } catch (err) {
+      console.error('[cmd] playChosenAudio error:', err);
     }
   }
 
@@ -138,11 +180,13 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
               name: '🎵 Audio Mode',
               value: [
                 '`!audio-mode` — toggle audio-only mode (all plays become audio)',
-                '`!audio <url>` — play audio directly (YouTube, Spotify, SoundCloud, etc.)',
+                '`!audio <url>` — play audio (YouTube, Spotify, SoundCloud, etc.)',
+                '`!music-search <query>` — search and play as audio',
+                '`!music-search -pick <query>` — choose from top 5',
+                '  └ `!music-pick <n>`',
                 '`!aq` — show audio queue',
                 '`!aq-next` / `!aq-prev` — navigate audio queue pages',
-                '`!aq-remove <n>` — remove from audio queue',
-                '`!aq-clear` — clear audio queue',
+                '`!aq-remove <n>` / `!aq-clear` — manage audio queue',
               ].join('\n'),
             },
             {
@@ -304,7 +348,11 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
         return;
       }
       if (streamController.isStreaming) {
-        await autoEnqueue(result.url, result.title);
+        if (streamController.audioMode) {
+          await autoAudioEnqueue(result.url, result.title);
+        } else {
+          await autoEnqueue(result.url, result.title);
+        }
         return;
       }
       await reply(`▶️ Playing: **${result.title}**`);
@@ -312,8 +360,81 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
         await client.guilds.fetch(GUILD_ID);
         const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
         const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
-        await streamController.playUrl(voiceChannel, result.url, textChannel);
+        if (streamController.audioMode) {
+          await streamController.playAudio(voiceChannel, result.url, textChannel);
+        } else {
+          await streamController.playUrl(voiceChannel, result.url, textChannel);
+        }
       } catch (err) { console.error('[cmd] !search playUrl error:', err); }
+      return;
+    }
+
+    // ── Music search (always audio) ──────────────────────────────────────────
+    if (content.startsWith('!music-search ')) {
+      const raw = content.slice('!music-search '.length).trim();
+      const pickMode = raw.startsWith('-pick ');
+      const query = pickMode ? raw.slice('-pick '.length).trim() : raw;
+
+      if (!query) {
+        await reply('Usage: `!music-search <query>` or `!music-search -pick <query>`');
+        return;
+      }
+
+      await reply(`🎵 Searching for **${query}**...`);
+
+      if (pickMode) {
+        let results: SearchResult[];
+        try {
+          const abort = new AbortController();
+          results = await searchYouTubeMultiple(query, 5, abort.signal);
+        } catch (err) {
+          console.error('[cmd] !music-search -pick error:', err);
+          await reply('❌ Search failed. Try again.');
+          return;
+        }
+        if (results.length === 0) { await reply('No results found.'); return; }
+        pendingResults = results;
+        // Mark these as audio picks
+        const list = results.map((r, i) => `**${i + 1}.** ${r.title} \`${r.duration}\` — ${r.channel}`).join('\n');
+        await reply(`**Music results** — reply \`!music-pick <number>\` to play:\n${list}`);
+      } else {
+        let result: { url: string; title: string };
+        try {
+          const abort = new AbortController();
+          result = await searchYouTube(query, abort.signal);
+        } catch (err) {
+          console.error('[cmd] !music-search error:', err);
+          await reply('❌ Search failed. Try again.');
+          return;
+        }
+        if (streamController.isStreaming) {
+          await autoAudioEnqueue(result.url, result.title);
+          return;
+        }
+        await reply(`🎵 Playing: **${result.title}**`);
+        try {
+          await client.guilds.fetch(GUILD_ID);
+          const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
+          const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+          await streamController.playAudio(voiceChannel, result.url, textChannel);
+        } catch (err) { console.error('[cmd] !music-search play error:', err); }
+      }
+      return;
+    }
+
+    if (content.startsWith('!music-pick ')) {
+      if (!pendingResults || pendingResults.length === 0) {
+        await reply('No active music search. Use `!music-search -pick <query>` first.');
+        return;
+      }
+      const n = parseInt(content.slice('!music-pick '.length).trim(), 10);
+      if (isNaN(n) || n < 1 || n > pendingResults.length) {
+        await reply(`Pick a number between 1 and ${pendingResults.length}.`);
+        return;
+      }
+      const chosen = pendingResults[n - 1];
+      pendingResults = null;
+      await playChosenAudio(chosen);
       return;
     }
 
