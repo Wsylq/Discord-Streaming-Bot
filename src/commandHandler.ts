@@ -1,6 +1,7 @@
 import type { Client, TextChannel, VoiceChannel } from 'discord.js-selfbot-v13';
 import type { VideoQueue } from './videoQueue';
-import { isYouTubeUrl, searchYouTube, searchYouTubeMultiple, searchChannelVideos, type SearchResult } from './youtubePlayer';
+import { isYouTubeUrl, searchYouTube, searchYouTubeMultiple, searchChannelVideos, resolveChannelUrl, fetchChannelVideosBatch, type SearchResult } from './youtubePlayer';
+import type { ChannelBrowser } from './channelBrowser';
 
 export interface StreamController {
   isStreaming: boolean;
@@ -22,6 +23,7 @@ export interface CommandHandlerDeps {
   streamController: StreamController;
   queue: VideoQueue;
   client: Client;
+  browser: ChannelBrowser | null;
 }
 
 interface RawMessagePacket {
@@ -34,21 +36,34 @@ interface RawMessagePacket {
 }
 
 export function registerCommandHandler(deps: CommandHandlerDeps): void {
-  const { streamController, queue, client } = deps;
+  const { streamController, queue, client, browser } = deps;
 
   const GUILD_ID = process.env['GUILD_ID']!;
   const VOICE_CHANNEL_ID = process.env['VOICE_CHANNEL_ID']!;
   const TEXT_CHANNEL_ID = process.env['TEXT_CHANNEL_ID']!;
   const OWNER_ID = process.env['OWNER_ID']!;
 
-  // Pending pick session — cleared after use or on new search
+  // Pending pick results — from !search -pick or channel browser
   let pendingResults: SearchResult[] | null = null;
+  const PAGE_SIZE = 5;
 
   async function reply(msg: string): Promise<void> {
     try {
       const ch = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
       await ch.send(msg);
     } catch { /* ignore */ }
+  }
+
+  async function playChosen(chosen: SearchResult): Promise<void> {
+    await reply(`▶️ Playing: **${chosen.title}**`);
+    try {
+      await client.guilds.fetch(GUILD_ID);
+      const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
+      const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+      await streamController.playUrl(voiceChannel, chosen.url, textChannel);
+    } catch (err) {
+      console.error('[cmd] playChosen error:', err);
+    }
   }
 
   client.on('raw', async (packet: RawMessagePacket) => {
@@ -60,26 +75,74 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
 
     const content = data.content.trim();
 
+    // ── Help ────────────────────────────────────────────────────────────────
     if (content === '!help') {
+      const helpEmbed = {
+        embeds: [{
+          color: 0x5865f2,
+          title: '📋 Commands',
+          fields: [
+            {
+              name: '🔍 Search',
+              value: [
+                '`!search <query>` — play top result instantly',
+                '`!search -pick <query>` — choose from top 5',
+                '`!search -channel <name>` — browse a channel\'s videos',
+              ].join('\n'),
+            },
+            {
+              name: '📺 Channel Browser',
+              value: [
+                '`!next` / `!prev` — navigate pages',
+                '`!page <n>` — jump to any page directly',
+                '`!search-in <keyword>` — filter by keyword',
+                '`!browse-clear` — clear filter',
+                '`!pick <n>` — play video by number',
+              ].join('\n'),
+            },
+            {
+              name: '▶️ Playback',
+              value: [
+                '`!play <url>` — stream a YouTube video',
+                '`!start` — stream from local folder',
+                '`!pause` / `!resume` — pause and resume',
+                '`!skip` — skip to next',
+                '`!loop` — loop current track',
+                '`!loopqueue` — loop entire queue',
+                '`!stop` — stop and leave voice',
+              ].join('\n'),
+            },
+          ],
+          footer: { text: 'lossai owns all' },
+          timestamp: new Date().toISOString(),
+        }],
+      };
+
+      // Try sending embed via webhook, fall back to plain text
+      if (browser) {
+        try {
+          const { webhookRequest: wr } = await import('./webhookHttp');
+          const webhookUrl = process.env['WEBHOOK_URL']!;
+          await wr(webhookUrl, 'POST', null, helpEmbed);
+          return;
+        } catch { /* fall through to text */ }
+      }
+
       await reply(
         '**Commands**\n' +
-        '`!search <query>` — Search YouTube and play the top result\n' +
-        '`!search -pick <query>` — Search and choose from top 5 results\n' +
-        '  └ `!pick <number>` — Pick a result\n' +
-        '`!search -channel <handle>` — Browse latest videos from a channel\n' +
-        '  └ `!pick <number>` — Pick a video to play\n' +
-        '`!play <url>` — Download and stream a YouTube video\n' +
-        '`!start` — Stream videos from your local folder\n' +
-        '`!pause` — Pause the current stream\n' +
-        '`!resume` — Resume from where you paused\n' +
-        '`!skip` — Skip to the next video\n' +
-        '`!loop` — Toggle looping the current track\n' +
-        '`!loopqueue` — Toggle looping the entire queue\n' +
-        '`!stop` — Stop streaming and leave voice'
+        '🔍 **Search**\n' +
+        '`!search <query>` — play top result\n' +
+        '`!search -pick <query>` — choose from top 5\n' +
+        '  └ `!pick <n>`\n' +
+        '`!search -channel <name>` — browse channel videos\n' +
+        '  └ `!next` `!prev` `!page <n>` `!search-in <kw>` `!browse-clear` `!pick <n>`\n\n' +
+        '▶️ **Playback**\n' +
+        '`!play <url>` `!start` `!pause` `!resume` `!skip` `!loop` `!loopqueue` `!stop`'
       );
       return;
     }
 
+    // ── Start local queue ────────────────────────────────────────────────────
     if (content === '!start') {
       if (streamController.isStreaming) return;
       if (queue.files.length === 0) { await reply('No videos found in the configured folder.'); return; }
@@ -92,6 +155,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       return;
     }
 
+    // ── Search ───────────────────────────────────────────────────────────────
     if (content.startsWith('!search ')) {
       const raw = content.slice('!search '.length).trim();
       const pickMode = raw.startsWith('-pick ');
@@ -107,33 +171,51 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
           'Usage:\n' +
           '`!search <query>` — play top result\n' +
           '`!search -pick <query>` — choose from top 5\n' +
-          '`!search -channel <handle>` — browse a channel\'s latest videos'
+          '`!search -channel <name>` — browse a channel\'s videos'
         );
         return;
       }
-      if (streamController.isStreaming) { await reply('Already streaming. Use `!stop` first.'); return; }
 
       if (channelMode) {
-        await reply(`📺 Fetching latest videos from **${query}**...`);
-        let results: SearchResult[];
+        // Resolve channel URL first, then fetch initial 5 videos and open browser
+        await reply(`📺 Fetching videos from **${query}**...`);
+        let videosUrl: string;
+        let displayName: string;
         try {
           const abort = new AbortController();
-          results = await searchChannelVideos(query, 5, abort.signal);
+          ({ videosUrl, displayName } = await resolveChannelUrl(query, abort.signal));
         } catch (err: unknown) {
-          console.error('[cmd] !search -channel error:', err);
-          const msg = err instanceof Error ? err.message : 'Unknown error';
-          await reply(`❌ ${msg}`);
+          console.error('[cmd] !search -channel resolve error:', err);
+          await reply(`❌ ${err instanceof Error ? err.message : 'Unknown error'}`);
           return;
         }
-        if (results.length === 0) { await reply('No videos found for that channel.'); return; }
 
-        pendingResults = results;
-        const list = results
-          .map((r, i) => `**${i + 1}.** ${r.title} \`${r.duration}\``)
-          .join('\n');
-        await reply(`**${results[0].channel} — Latest videos**\n${list}\n\nReply \`!pick <number>\` to play.`);
+        // Fetch first 5 immediately so the embed appears fast
+        let initialResults: SearchResult[] = [];
+        try {
+          const abort = new AbortController();
+          initialResults = await fetchChannelVideosBatch(videosUrl, displayName, 1, PAGE_SIZE, abort.signal);
+        } catch (err) {
+          console.error('[cmd] !search -channel initial fetch error:', err);
+          await reply('❌ Failed to fetch videos. Try again.');
+          return;
+        }
 
-      } else if (pickMode) {
+        if (initialResults.length === 0) { await reply('No videos found for that channel.'); return; }
+
+        pendingResults = initialResults;
+
+        if (browser) {
+          await browser.open(displayName, videosUrl, initialResults);
+        } else {
+          // No webhook — fall back to text list
+          const list = initialResults.map((r, i) => `**${i + 1}.** ${r.title} \`${r.duration}\``).join('\n');
+          await reply(`**${displayName} — Videos**\n${list}\n\nReply \`!pick <number>\` to play.`);
+        }
+        return;
+      }
+
+      if (pickMode) {
         await reply(`🔍 Searching for **${query}**...`);
         let results: SearchResult[];
         try {
@@ -147,61 +229,99 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
         if (results.length === 0) { await reply('No results found.'); return; }
 
         pendingResults = results;
-        const list = results
-          .map((r, i) => `**${i + 1}.** ${r.title} \`${r.duration}\` — ${r.channel}`)
-          .join('\n');
+        const list = results.map((r, i) => `**${i + 1}.** ${r.title} \`${r.duration}\` — ${r.channel}`).join('\n');
         await reply(`**Search results** — reply \`!pick <number>\` to play:\n${list}`);
-
-      } else {
-        // Instant play top result
-        pendingResults = null;
-        await reply(`🔍 Searching for **${query}**...`);
-        let result: { url: string; title: string };
-        try {
-          const abort = new AbortController();
-          result = await searchYouTube(query, abort.signal);
-        } catch (err) {
-          console.error('[cmd] !search error:', err);
-          await reply('❌ Search failed. Try again.');
-          return;
-        }
-        await reply(`▶️ Playing: **${result.title}**`);
-        try {
-          await client.guilds.fetch(GUILD_ID);
-          const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
-          const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
-          await streamController.playUrl(voiceChannel, result.url, textChannel);
-        } catch (err) { console.error('[cmd] !search playUrl error:', err); }
-      }
-      return;
-    }
-
-    if (content.startsWith('!pick ')) {
-      if (!pendingResults) { await reply('No active search. Use `!search -pick <query>` first.'); return; }
-      if (streamController.isStreaming) { await reply('Already streaming. Use `!stop` first.'); return; }
-
-      const n = parseInt(content.slice('!pick '.length).trim(), 10);
-      if (isNaN(n) || n < 1 || n > pendingResults.length) {
-        await reply(`Pick a number between 1 and ${pendingResults.length}.`);
         return;
       }
 
-      const chosen = pendingResults[n - 1];
+      // Instant play
       pendingResults = null;
-
-      await reply(`▶️ Playing: **${chosen.title}**`);
-
+      await reply(`🔍 Searching for **${query}**...`);
+      let result: { url: string; title: string };
+      try {
+        const abort = new AbortController();
+        result = await searchYouTube(query, abort.signal);
+      } catch (err) {
+        console.error('[cmd] !search error:', err);
+        await reply('❌ Search failed. Try again.');
+        return;
+      }
+      await reply(`▶️ Playing: **${result.title}**`);
       try {
         await client.guilds.fetch(GUILD_ID);
         const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
         const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
-        await streamController.playUrl(voiceChannel, chosen.url, textChannel);
-      } catch (err) {
-        console.error('[cmd] !pick playUrl error:', err);
-      }
+        await streamController.playUrl(voiceChannel, result.url, textChannel);
+      } catch (err) { console.error('[cmd] !search playUrl error:', err); }
       return;
     }
 
+    // ── Browser navigation ───────────────────────────────────────────────────
+    if (content === '!next') {
+      if (!browser?.isActive) { await reply('No active channel browser. Use `!search -channel <name>` first.'); return; }
+      const moved = await browser.next();
+      if (!moved) await reply('Already on the last page.');
+      return;
+    }
+
+    if (content === '!prev') {
+      if (!browser?.isActive) { await reply('No active channel browser. Use `!search -channel <name>` first.'); return; }
+      const moved = await browser.prev();
+      if (!moved) await reply('Already on the first page.');
+      return;
+    }
+
+    if (content.startsWith('!page ')) {
+      if (!browser?.isActive) { await reply('No active channel browser. Use `!search -channel <name>` first.'); return; }
+      const n = parseInt(content.slice('!page '.length).trim(), 10);
+      if (isNaN(n) || n < 1) { await reply('Usage: `!page <number>`'); return; }
+      await reply(`⏳ Jumping to page ${n}...`);
+      const ok = await browser.goToPage(n);
+      if (!ok) await reply(`Page ${n} doesn't exist.`);
+      return;
+    }
+
+    if (content.startsWith('!search-in ')) {
+      if (!browser?.isActive) { await reply('No active channel browser. Use `!search -channel <name>` first.'); return; }
+      const keyword = content.slice('!search-in '.length).trim();
+      if (!keyword) { await reply('Usage: `!search-in <keyword>`'); return; }
+      await browser.searchIn(keyword);
+      return;
+    }
+
+    if (content === '!browse-clear') {
+      if (!browser?.isActive) return;
+      await browser.clearFilter();
+      return;
+    }
+
+    // ── Pick ─────────────────────────────────────────────────────────────────
+    if (content.startsWith('!pick ')) {
+      // Resolve pick source: browser takes priority over pendingResults
+      // For browser, use the full filtered list so !pick 1 always means item 1 overall
+      const results = browser?.isActive ? browser.currentResults : pendingResults;
+
+      if (!results || results.length === 0) {
+        await reply('No active search. Use `!search -pick <query>` or `!search -channel <name>` first.');
+        return;
+      }
+      if (streamController.isStreaming) { await reply('Already streaming. Use `!stop` first.'); return; }
+
+      const n = parseInt(content.slice('!pick '.length).trim(), 10);
+      if (isNaN(n) || n < 1 || n > results.length) {
+        await reply(`Pick a number between 1 and ${results.length}.`);
+        return;
+      }
+
+      const chosen = results[n - 1];
+      pendingResults = null;
+      browser?.close();
+
+      await playChosen(chosen);
+      return;
+    }
+
+    // ── Play URL ─────────────────────────────────────────────────────────────
     if (content.startsWith('!play ')) {
       const url = content.slice('!play '.length).trim();
       if (!isYouTubeUrl(url)) { await reply('Invalid URL. Only YouTube links are supported.'); return; }
@@ -215,6 +335,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       return;
     }
 
+    // ── Playback controls ────────────────────────────────────────────────────
     if (content === '!pause') {
       if (!streamController.isStreaming) { await reply('Nothing is playing.'); return; }
       const ok = await streamController.pause();

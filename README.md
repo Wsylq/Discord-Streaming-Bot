@@ -10,12 +10,12 @@ A Discord selfbot that streams video directly into voice channels. Point it at a
 - [ ] Add buffer for rewinding
 - [x] Add Loop
 - [ ] Add Queue
-   - [ ] Persistent Queues
+   - [ ] Persistent Queues - .db file
 - [x] Add Now-playing and Duration
    - [ ] Make it Sticky Message
 - [x] Add Search, with Pick arguments
    - [x] Add Channel Videos Search
-      - [ ] Make it via an Embed to Search (type) and Browse (buttons) videos there
+      - [x] Make it via an Embed to Search (type) and Browse (buttons) videos there
 - [x] Add Help Command -- Trying embed, if no perms then bot will send msg saying no perms.
 - [ ] Add Audio-Only-Mode to provide highest quality audio
    - [ ] Add Lyrics

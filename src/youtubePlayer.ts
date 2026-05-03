@@ -125,18 +125,14 @@ export function searchYouTubeMultiple(
 }
 
 /**
- * Fetches the latest N videos from a YouTube channel by name.
- * Step 1: search for a video to resolve the channel URL + real name.
- * Step 2: fetch videos from that channel's uploads page.
+ * Resolves a channel name to its uploads URL and display name.
  */
-export function searchChannelVideos(
+export function resolveChannelUrl(
   channelName: string,
-  count: number,
   abortSignal: AbortSignal,
-): Promise<SearchResult[]> {
+): Promise<{ videosUrl: string; displayName: string }> {
   return new Promise((resolve, reject) => {
-    // Step 1: get channel_url and channel name from a search result
-    const step1 = spawn(
+    const proc = spawn(
       YTDLP_BIN,
       [
         '--js-runtimes', 'node',
@@ -149,80 +145,165 @@ export function searchChannelVideos(
       { shell: false, stdio: ['ignore', 'pipe', 'pipe'] },
     );
 
-    abortSignal.addEventListener('abort', () => { step1.kill('SIGKILL'); reject(new Error('Aborted')); }, { once: true });
+    abortSignal.addEventListener('abort', () => { proc.kill('SIGKILL'); reject(new Error('Aborted')); }, { once: true });
 
-    let step1Out = '';
-    step1.stdout?.on('data', (chunk: Buffer) => { step1Out += chunk.toString(); });
-    step1.stderr?.on('data', (chunk: Buffer) => {
+    let out = '';
+    proc.stdout?.on('data', (chunk: Buffer) => { out += chunk.toString(); });
+    proc.stderr?.on('data', (chunk: Buffer) => {
       const msg = chunk.toString().trim();
       if (msg) console.error('[yt-dlp channel resolve]', msg);
     });
 
-    step1.on('close', (code) => {
+    proc.on('close', (code) => {
       if (abortSignal.aborted) return;
       if (code !== 0) { reject(new Error(`Could not resolve channel (code ${code})`)); return; }
-
-      const line = step1Out.trim().split('\n')[0] ?? '';
-      const [channelUrl, resolvedName] = line.split('\t');
-
-      if (!channelUrl?.startsWith('http')) {
-        reject(new Error(`Could not find channel "${channelName}"`));
-        return;
-      }
-
-      const displayName = resolvedName?.trim() || channelName;
-      const videosUrl = channelUrl.replace(/\/?$/, '/videos');
-      console.log(`[yt-dlp] Resolved "${channelName}" → "${displayName}" (${videosUrl})`);
-
-      // Step 2: fetch videos — no --flat-playlist so titles/durations are populated
-      const step2 = spawn(
-        YTDLP_BIN,
-        [
-          '--js-runtimes', 'node',
-          '--no-warnings',
-          '--print', '%(webpage_url)s\t%(title)s\t%(duration_string)s',
-          '--playlist-end', String(count),
-          videosUrl,
-        ],
-        { shell: false, stdio: ['ignore', 'pipe', 'pipe'] },
-      );
-
-      abortSignal.addEventListener('abort', () => { step2.kill('SIGKILL'); }, { once: true });
-
-      let step2Out = '';
-      step2.stdout?.on('data', (chunk: Buffer) => { step2Out += chunk.toString(); });
-      step2.stderr?.on('data', (chunk: Buffer) => {
-        const msg = chunk.toString().trim();
-        if (msg) console.error('[yt-dlp channel videos]', msg);
+      const [channelUrl, resolvedName] = (out.trim().split('\n')[0] ?? '').split('\t');
+      if (!channelUrl?.startsWith('http')) { reject(new Error(`Could not find channel "${channelName}"`)); return; }
+      resolve({
+        videosUrl: channelUrl.replace(/\/?$/, '/videos'),
+        displayName: resolvedName?.trim() || channelName,
       });
-
-      step2.on('close', (code2) => {
-        if (abortSignal.aborted) return;
-        if (code2 !== 0) { reject(new Error(`Failed to fetch channel videos (code ${code2})`)); return; }
-
-        const results: SearchResult[] = step2Out
-          .trim()
-          .split('\n')
-          .filter(Boolean)
-          .map(line => {
-            const [url, title, duration] = line.split('\t');
-            return { url: url ?? '', title: title ?? '', duration: duration ?? '?', channel: displayName };
-          })
-          .filter(r => r.url.startsWith('http'));
-
-        if (results.length === 0) {
-          reject(new Error(`No videos found for "${displayName}".`));
-          return;
-        }
-
-        resolve(results);
-      });
-
-      step2.on('error', reject);
     });
 
-    step1.on('error', reject);
+    proc.on('error', reject);
   });
+}
+
+/**
+ * Fetches a batch of videos from a channel uploads URL starting at a given offset.
+ * Uses --playlist-start / --playlist-end for pagination.
+ */
+export function fetchChannelVideosBatch(
+  videosUrl: string,
+  displayName: string,
+  startIndex: number,
+  batchSize: number,
+  abortSignal: AbortSignal,
+): Promise<SearchResult[]> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(
+      YTDLP_BIN,
+      [
+        '--js-runtimes', 'node',
+        '--no-warnings',
+        '--flat-playlist',
+        '--print', '%(webpage_url)s\t%(title)s\t%(duration_string)s',
+        '--playlist-start', String(startIndex),
+        '--playlist-end', String(startIndex + batchSize - 1),
+        videosUrl,
+      ],
+      { shell: false, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+
+    abortSignal.addEventListener('abort', () => { proc.kill('SIGKILL'); resolve([]); }, { once: true });
+
+    let out = '';
+    proc.stdout?.on('data', (chunk: Buffer) => { out += chunk.toString(); });
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      const msg = chunk.toString().trim();
+      if (msg) console.error('[yt-dlp channel batch]', msg);
+    });
+
+    proc.on('close', (code) => {
+      if (abortSignal.aborted) { resolve([]); return; }
+      if (code !== 0) { reject(new Error(`Batch fetch failed (code ${code})`)); return; }
+
+      const results: SearchResult[] = out
+        .trim().split('\n').filter(Boolean)
+        .map(line => {
+          const [url, title, duration] = line.split('\t');
+          return { url: url ?? '', title: title ?? '', duration: duration ?? '?', channel: displayName };
+        })
+        .filter(r => r.url.startsWith('http'));
+
+      resolve(results);
+    });
+
+    proc.on('error', (err) => reject(err));
+  });
+}
+
+/**
+ * Streams all videos from a channel in a single yt-dlp process.
+ * Calls onResult for each video as it arrives — no waiting for the full list.
+ * Returns a stop function to kill the process early.
+ */
+export function streamChannelVideos(
+  videosUrl: string,
+  displayName: string,
+  abortSignal: AbortSignal,
+  onResult: (result: SearchResult) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(
+      YTDLP_BIN,
+      [
+        '--js-runtimes', 'node',
+        '--no-warnings',
+        '--flat-playlist',
+        '--print', '%(webpage_url)s\t%(title)s\t%(duration_string)s',
+        videosUrl,
+      ],
+      { shell: false, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+
+    abortSignal.addEventListener('abort', () => {
+      proc.kill('SIGKILL');
+      resolve(); // not an error — just stopped early
+    }, { once: true });
+
+    let partial = '';
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      const text = partial + chunk.toString();
+      const lines = text.split('\n');
+      partial = lines.pop() ?? ''; // last incomplete line
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const [url, title, duration] = line.split('\t');
+        if (url?.startsWith('http')) {
+          onResult({ url, title: title ?? '', duration: duration ?? '?', channel: displayName });
+        }
+      }
+    });
+
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      const msg = chunk.toString().trim();
+      if (msg) console.error('[yt-dlp stream]', msg);
+    });
+
+    proc.on('close', (code) => {
+      if (abortSignal.aborted) { resolve(); return; }
+      // Process any remaining partial line
+      if (partial.trim()) {
+        const [url, title, duration] = partial.split('\t');
+        if (url?.startsWith('http')) {
+          onResult({ url, title: title ?? '', duration: duration ?? '?', channel: displayName });
+        }
+      }
+      if (code !== 0 && code !== null) {
+        reject(new Error(`Stream fetch failed (code ${code})`));
+      } else {
+        resolve();
+      }
+    });
+
+    proc.on('error', reject);
+  });
+}
+
+/**
+ * Legacy: fetch N videos at once. Used by !search -channel for initial load.
+ * @deprecated Use resolveChannelUrl + fetchChannelVideosBatch instead.
+ */
+export function searchChannelVideos(
+  channelName: string,
+  count: number,
+  abortSignal: AbortSignal,
+): Promise<SearchResult[]> {
+  return resolveChannelUrl(channelName, abortSignal).then(({ videosUrl, displayName }) =>
+    fetchChannelVideosBatch(videosUrl, displayName, 1, count, abortSignal),
+  );
 }
 
 export interface DownloadProgress {

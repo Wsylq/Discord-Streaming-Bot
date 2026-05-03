@@ -1,7 +1,6 @@
-import * as https from 'https';
-import * as http from 'http';
 import * as path from 'path';
 import { execFile } from 'child_process';
+import { webhookRequest } from './webhookHttp';
 
 const YTDLP_BIN = path.join(
   path.dirname(require.resolve('youtube-dl-exec')),
@@ -80,55 +79,6 @@ function buildEmbed(meta: VideoMeta, elapsedSecs: number, status: 'playing' | 'p
       footer: { text: 'lossai owns all' },
     }],
   };
-}
-
-/** POST or PATCH a webhook message. Returns the message ID on first post. */
-function webhookRequest(
-  webhookUrl: string,
-  method: 'POST' | 'PATCH',
-  messageId: string | null,
-  body: object,
-): Promise<string | null> {
-  return new Promise((resolve) => {
-    const url = messageId
-      ? `${webhookUrl}/messages/${messageId}?wait=true`
-      : `${webhookUrl}?wait=true`;
-
-    const payload = JSON.stringify(body);
-    const parsed = new URL(url);
-    const lib = parsed.protocol === 'https:' ? https : http;
-
-    const req = lib.request(
-      {
-        hostname: parsed.hostname,
-        path: parsed.pathname + parsed.search,
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(payload),
-        },
-      },
-      (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            if (res.statusCode && res.statusCode >= 400) {
-              console.warn(`[webhook] HTTP ${res.statusCode}:`, data.slice(0, 200));
-            }
-            resolve(json.id ?? null);
-          } catch {
-            resolve(null);
-          }
-        });
-      },
-    );
-
-    req.on('error', () => resolve(null));
-    req.write(payload);
-    req.end();
-  });
 }
 
 export class WebhookNotifier {
