@@ -11,7 +11,7 @@ Stream local video files to Discord voice channels.
 - [x] Add Loop
 - [ ] Add Queue
    - [ ] Persistent Queues
-- [ ] Add Now-playing and Duration
+- [x] Add Now-playing and Duration
 - [x] Add Search, with Pick arguments
    - [x] Add Channel Videos Search
 - [x] Add Help Command -- Trying embed, if no perms then bot will send msg saying no perms.
