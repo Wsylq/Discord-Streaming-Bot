@@ -12,7 +12,7 @@ A Discord selfbot that streams video directly into voice channels. Point it at a
 - [x] Add Queue
    - [x] Persistent Queues - .db file
 - [x] Add Now-playing and Duration
-   <s>- [ ] Make it Sticky Message</s>
+   - <s>[ ] Make it Sticky Message</s>
 - [x] Add Search, with Pick arguments
    - [x] Add Channel Videos Search
       - [x] Make it via an Embed to Search (type) and Browse (buttons) videos there
@@ -27,7 +27,7 @@ A Discord selfbot that streams video directly into voice channels. Point it at a
 - [x] Search command Optimizations
 - [x] Improve the Help Command Embed
 - [x] Simplify Audio / Video Commands by Hiding them based on what Mode is Active
-<s>- [ ] Make the Bot Not Download the Queue Songs again and again.</s>
+- <s>[ ] Make the Bot Not Download the Queue Songs again and again.</s>
 - [x] Make a Normal Discord Bot Control This, Keep it Optional
 
 ## Setup
