@@ -519,7 +519,11 @@ export function createStreamController(
 
       // Record to history for queue loop
       if (state.loopAudioQueue) {
-        state.audioQueueHistory.push({ url: resolvedUrl, title: '', duration: '?', artist: '' });
+        // Only add if not already in history (avoid duplicates when looping)
+        const alreadyInHistory = state.audioQueueHistory.some(h => h.url === resolvedUrl);
+        if (!alreadyInHistory) {
+          state.audioQueueHistory.push({ url: resolvedUrl, title: resolvedUrl, duration: '?', artist: '' });
+        }
       }
 
       console.log(`[audio] Playing: ${audioFile}`);
@@ -636,13 +640,26 @@ export function createStreamController(
       state.loopAudioQueue = !state.loopAudioQueue;
       if (state.loopAudioQueue) {
         state.loopAudioTrack = false;
-        // Snapshot current queue into history so already-queued songs get looped too
+        // Snapshot current queue into history so already-queued songs get looped too.
+        // Also include the currently playing track (it's been dequeued already but is
+        // still playing — without this it gets lost from the loop on the first cycle).
         const { audioGetAll } = require('./audioQueueDb');
         const current = audioGetAll() as Array<{ url: string; title: string; duration: string; artist: string }>;
-        state.audioQueueHistory = current.map(i => ({
-          url: i.url, title: i.title, duration: i.duration, artist: i.artist,
-        }));
-        console.log(`[stream] Loop audio queue ON — snapshotted ${state.audioQueueHistory.length} tracks.`);
+        const history: Array<{ url: string; title: string; duration: string; artist: string }> = [];
+        // Prepend the currently playing track if there is one
+        if (state.loopAudioUrl) {
+          history.push({
+            url: state.loopAudioUrl,
+            title: state.loopAudioFile ? (state.loopAudioUrl) : state.loopAudioUrl,
+            duration: '?',
+            artist: '',
+          });
+        }
+        for (const i of current) {
+          history.push({ url: i.url, title: i.title, duration: i.duration, artist: i.artist });
+        }
+        state.audioQueueHistory = history;
+        console.log(`[stream] Loop audio queue ON — snapshotted ${state.audioQueueHistory.length} tracks (including current).`);
       } else {
         state.audioQueueHistory = [];
         console.log('[stream] Loop audio queue OFF.');

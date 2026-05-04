@@ -35,6 +35,8 @@ export interface BotCommandHandlerDeps {
   selfbotClient: SelfbotClient;
   queueDisplay: QueueDisplay | null;
   audioQueueDisplay: AudioQueueDisplay | null;
+  /** Called after audio-mode is toggled to update the guild's slash command list. */
+  reregisterCommands: (audioMode: boolean) => Promise<void>;
 }
 
 const PAGE_SIZE = 5;
@@ -51,12 +53,16 @@ export function createBotCommandHandler(
     selfbotClient,
     queueDisplay,
     audioQueueDisplay,
+    reregisterCommands,
   } = deps;
 
   // Pending pick results — local to the bot handler (not shared with selfbot)
   let pendingResults: SearchResult[] | null = null;
   // Track whether the last search-pick was a music (audio) pick
   let pendingResultsIsAudio = false;
+  // Cooldown for audio-mode toggle — prevents rapid re-registration spam
+  let lastAudioModeToggle = 0;
+  const AUDIO_MODE_COOLDOWN_MS = 20_000;
 
   async function getSelfbotTextChannel(): Promise<TextChannel> {
     return selfbotClient.channels.fetch(textChannelId) as Promise<TextChannel>;
@@ -256,10 +262,24 @@ export function createBotCommandHandler(
     }
 
     if (cmd === 'audio-mode') {
+      const now = Date.now();
+      const remaining = AUDIO_MODE_COOLDOWN_MS - (now - lastAudioModeToggle);
+      if (remaining > 0) {
+        await safeReply(interaction, {
+          content: `⏳ Audio mode was just changed. Please wait **${Math.ceil(remaining / 1000)}s** before toggling again.`,
+          ephemeral: true,
+        });
+        return;
+      }
+      lastAudioModeToggle = now;
       const on = streamController.toggleAudioMode();
+      // Re-register slash commands in the background — show video or audio set
+      reregisterCommands(on).catch((err) =>
+        console.error('[bot] Failed to re-register commands after audio-mode toggle:', err),
+      );
       await safeReply(interaction, on
-        ? '🎵 Audio mode **ON** — all plays will be audio-only at max quality.'
-        : '🎵 Audio mode **OFF** — back to video streaming.',
+        ? '🎵 Audio mode **ON** — slash commands updated to audio commands.'
+        : '🎵 Audio mode **OFF** — slash commands updated to video commands.',
       );
       return;
     }

@@ -1,8 +1,8 @@
-import type { Client } from 'discord.js';
+import type { Client, Guild } from 'discord.js';
 import { ChatInputCommandInteraction } from 'discord.js';
 import type { Client as SelfbotClient, TextChannel } from 'discord.js-selfbot-v13';
 import type { StreamController } from './commandHandler';
-import { SLASH_COMMANDS } from './slashCommands';
+import { getSlashCommands } from './slashCommands';
 import { createBotCommandHandler } from './botCommandHandler';
 import { buildHelpEmbeds } from './helpEmbeds';
 
@@ -16,9 +16,9 @@ export interface BotManagerDeps {
   ownerId: string;
 }
 
-
 export class BotManager {
   private deps: BotManagerDeps;
+  private guild: Guild | null = null;
 
   constructor(deps: BotManagerDeps) {
     this.deps = deps;
@@ -27,10 +27,25 @@ export class BotManager {
   /** Called once after botClient.login() resolves. Attaches the ready handler. */
   start(): void {
     const { botClient } = this.deps;
-
     botClient.on('ready', async () => {
       await this._onReady();
     });
+  }
+
+  /**
+   * Re-registers slash commands for the current audio mode.
+   * Called by the audio-mode command handler after toggling.
+   * No-op if the guild was not found at startup.
+   */
+  async reregisterCommands(audioMode: boolean): Promise<void> {
+    if (!this.guild) return;
+    try {
+      const commands = getSlashCommands(audioMode);
+      await this.guild.commands.set(commands);
+      console.log(`[BotManager] Slash commands updated for audio mode: ${audioMode} (${commands.length} commands).`);
+    } catch (err) {
+      console.error('[BotManager] Failed to re-register slash commands:', err);
+    }
   }
 
   private async _onReady(): Promise<void> {
@@ -45,14 +60,13 @@ export class BotManager {
     } = this.deps;
 
     // 1. Attempt to fetch the guild from the bot client's guild cache
-    const guild = botClient.guilds.cache.get(guildId);
+    const guild = botClient.guilds.cache.get(guildId) ?? null;
 
     if (!guild) {
       // Guild not found — send warning + help embed via selfbot
       try {
         const textChannel = await selfbotClient.channels.fetch(textChannelId) as TextChannel;
         await textChannel.send('discord bot not invited, invite the discord bot for slash commands');
-        // Show slash command help since the bot is enabled (just not in the guild yet)
         await textChannel.send(buildHelpEmbeds(true));
       } catch (err) {
         console.error('[BotManager] Failed to send guild-not-found warning via selfbot:', err);
@@ -60,16 +74,15 @@ export class BotManager {
       return;
     }
 
-    // Guild found — log confirmation
+    this.guild = guild;
     console.log(`[BotManager] Bot is a member of guild ${guildId}. Registering slash commands...`);
 
-    // 2. Register slash commands via bulk overwrite
+    // 2. Register slash commands for current audio mode (starts as false = video mode)
     try {
-      await guild.commands.set(SLASH_COMMANDS);
+      await guild.commands.set(getSlashCommands(streamController.audioMode));
       console.log('[BotManager] Slash commands registered successfully.');
     } catch (err) {
       console.error('[BotManager] Failed to register slash commands:', err);
-      // Continue without crashing — selfbot remains functional
     }
 
     // 3. Attach the interactionCreate listener
@@ -83,6 +96,7 @@ export class BotManager {
       selfbotClient,
       queueDisplay: null,
       audioQueueDisplay: null,
+      reregisterCommands: (audioMode: boolean) => this.reregisterCommands(audioMode),
     });
 
     botClient.on('interactionCreate', async (interaction) => {
@@ -90,8 +104,6 @@ export class BotManager {
       try {
         await handleInteraction(interaction as ChatInputCommandInteraction);
       } catch (err) {
-        // Swallow expired/unknown interaction errors — these happen when Discord's
-        // 3-second acknowledgement window passes before the bot responds.
         const code = (err as { code?: number }).code;
         if (code === 10062) {
           console.warn('[BotManager] Interaction expired before bot could respond (10062). Ignoring.');
