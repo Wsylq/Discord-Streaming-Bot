@@ -4,6 +4,7 @@ import type { Client as SelfbotClient, TextChannel } from 'discord.js-selfbot-v1
 import type { StreamController } from './commandHandler';
 import { SLASH_COMMANDS } from './slashCommands';
 import { createBotCommandHandler } from './botCommandHandler';
+import { buildHelpEmbeds } from './helpEmbeds';
 
 export interface BotManagerDeps {
   botClient: Client;
@@ -15,61 +16,6 @@ export interface BotManagerDeps {
   ownerId: string;
 }
 
-const HELP_EMBED = {
-  embeds: [{
-    color: 0x5865f2,
-    title: 'Available Commands',
-    description: 'The prefix is `!`. Mandatory arguments are in `<>`, optional are in `[]`.',
-    fields: [
-      {
-        name: '🔍 Search & Browse',
-        value: [
-          '`!search <query>` — play top result instantly',
-          '`!play` | `!audio` — play video or audio (YouTube, Spotify, SoundCloud, etc.)',
-          '`!music-search <query>` — search and play as audio',
-          '',
-          '`!search -pick <query>` — choose from top 5',
-          '`!music-search -pick <query>` — choose from top 5 as audio',
-          '',
-          '`!search -channel <name>` — browse a channel\'s videos',
-          '`!next` , `!prev` / `!page <n>` — navigate pages',
-          '`!search-in <kw>` | `!browse-clear` — filter results',
-          '`!pick <n>` — play video by number',
-        ].join('\n'),
-      },
-      {
-        name: '🎵 Audio & Queue',
-        value: [
-          '`!audio-mode` — toggle audio-only mode (all plays become audio)',
-          '`!audio <url>` — play audio direct link',
-          '',
-          '`!aq` — show audio queue',
-          '`!aq-remove <n>` — remove item from audio queue',
-          '`!aq-clear` — clear audio queue',
-          '',
-          '`!loop-audio` — loop current audio track',
-          '`!loop-audio-queue` — loop entire audio queue',
-          '',
-          '`!queue` — show video queue',
-          '`!queue-add <url>` | `!queue-play` | `!queue-clear`',
-        ].join('\n'),
-      },
-      {
-        name: '▶️ Playback Controls',
-        value: [
-          '`!pause` — pause the stream',
-          '`!resume` — resume from where you paused',
-          '`!skip` — skip to next in queue',
-          '`!loop` — loop current video track',
-          '`!loopqueue` — loop entire video queue',
-          '`!stop` — stop and leave voice',
-        ].join('\n'),
-      },
-    ],
-    footer: { text: 'lossai owns all' },
-    timestamp: new Date().toISOString(),
-  }],
-};
 
 export class BotManager {
   private deps: BotManagerDeps;
@@ -106,7 +52,8 @@ export class BotManager {
       try {
         const textChannel = await selfbotClient.channels.fetch(textChannelId) as TextChannel;
         await textChannel.send('discord bot not invited, invite the discord bot for slash commands');
-        await textChannel.send(HELP_EMBED);
+        // Show slash command help since the bot is enabled (just not in the guild yet)
+        await textChannel.send(buildHelpEmbeds(true));
       } catch (err) {
         console.error('[BotManager] Failed to send guild-not-found warning via selfbot:', err);
       }

@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   const audioQueueDisplay = config.webhookUrl ? new AudioQueueDisplay(config.webhookUrl) : null;
   const streamController = createStreamController(streamer, notifier, queueDisplay, audioQueueDisplay);
 
-  registerCommandHandler({ streamController, queue, client, browser, queueDisplay, audioQueueDisplay });
+  registerCommandHandler({ streamController, queue, client, browser, queueDisplay, audioQueueDisplay, botEnabled: config.botEnabled });
 
   // Conditionally start the Discord bot (shares the same streamController instance)
   if (config.botEnabled) {

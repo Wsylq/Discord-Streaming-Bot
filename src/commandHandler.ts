@@ -6,6 +6,7 @@ import type { QueueDisplay } from './queueDisplay';
 import type { AudioQueueDisplay } from './audioQueueDisplay';
 import { enqueue, removeByPosition, clearQueue, getAll, queueLength } from './queueDb';
 import { audioEnqueue, audioRemoveByPosition, audioClearQueue, audioGetAll, audioQueueLength } from './audioQueueDb';
+import { buildHelpEmbeds } from './helpEmbeds';
 
 export interface StreamController {
   isStreaming: boolean;
@@ -38,6 +39,7 @@ export interface CommandHandlerDeps {
   browser: ChannelBrowser | null;
   queueDisplay: QueueDisplay | null;
   audioQueueDisplay: AudioQueueDisplay | null;
+  botEnabled?: boolean;
 }
 
 interface RawMessagePacket {
@@ -51,6 +53,7 @@ interface RawMessagePacket {
 
 export function registerCommandHandler(deps: CommandHandlerDeps): void {
   const { streamController, queue, client, browser, queueDisplay, audioQueueDisplay } = deps;
+  const botEnabled = deps.botEnabled ?? false;
 
   const GUILD_ID = process.env['GUILD_ID']!;
   const VOICE_CHANNEL_ID = process.env['VOICE_CHANNEL_ID']!;
@@ -157,82 +160,21 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
 
     // ── Help ────────────────────────────────────────────────────────────────
     if (content === '!help') {
-      const helpEmbed = {
-        embeds: [{
-          color: 0x5865f2,
-          title: 'Available Commands',
-          description: 'The prefix is `!`. Mandatory arguments are in `<>`, optional are in `[]`.',
-          fields: [
-            {
-              name: '🔍 Search & Browse',
-              value: [
-                '`!search <query>` — play top result instantly',
-                '`!play` | `!audio` — play video or audio (YouTube, Spotify, SoundCloud, etc.)',
-                '`!music-search <query>` — search and play as audio',
-                '',
-                '`!search -pick <query>` — choose from top 5',
-                '`!music-search -pick <query>` — choose from top 5 as audio',
-                '',
-                '`!search -channel <name>` — browse a channel\'s videos',
-                '`!next` , `!prev` / `!page <n>` — navigate pages',
-                '`!search-in <kw>` | `!browse-clear` — filter results',
-                '`!pick <n>` — play video by number',
-              ].join('\n'),
-            },
-            {
-              name: '🎵 Audio & Queue',
-              value: [
-                '`!audio-mode` — toggle audio-only mode (all plays become audio)',
-                '`!audio <url>` — play audio direct link',
-                '',
-                '`!aq` — show audio queue',
-                '`!aq-remove <n>` — remove item from audio queue',
-                '`!aq-clear` — clear audio queue',
-                '',
-                '`!loop-audio` — loop current audio track',
-                '`!loop-audio-queue` — loop entire audio queue',
-                '',
-                '`!queue` — show video queue',
-                '`!queue-add <url>` | `!queue-play` | `!queue-clear`',
-              ].join('\n'),
-            },
-            {
-              name: '▶️ Playback Controls',
-              value: [
-                '`!pause` — pause the stream',
-                '`!resume` — resume from where you paused',
-                '`!skip` — skip to next in queue',
-                '`!loop` — loop current video track',
-                '`!loopqueue` — loop entire video queue',
-                '`!stop` — stop and leave voice',
-              ].join('\n'),
-            },
-          ],
-          footer: { text: 'lossai owns all' },
-          timestamp: new Date().toISOString(),
-        }],
-      };
+      const helpPayload = buildHelpEmbeds(botEnabled);
 
       if (browser) {
         try {
           const { webhookRequest: wr } = await import('./webhookHttp');
           const webhookUrl = process.env['WEBHOOK_URL']!;
-          await wr(webhookUrl, 'POST', null, helpEmbed);
+          await wr(webhookUrl, 'POST', null, helpPayload);
           return;
-        } catch { /* fall through to text */ }
+        } catch { /* fall through to channel send */ }
       }
 
-      await reply(
-        '**Available Commands** — prefix `!`\n\n' +
-        '🔍 **Search & Browse**\n' +
-        '`!search <query>` `!search -pick <query>` `!search -channel <name>`\n' +
-        '`!next` `!prev` `!page <n>` `!pick <n>` `!search-in <kw>`\n\n' +
-        '🎵 **Audio**\n' +
-        '`!audio-mode` `!audio <url>` `!music-search <query>`\n' +
-        '`!aq` `!aq-remove <n>` `!loop-audio` `!loop-audio-queue`\n\n' +
-        '▶️ **Playback**\n' +
-        '`!play <url>` `!pause` `!resume` `!skip` `!loop` `!loopqueue` `!stop`'
-      );
+      try {
+        const ch = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+        await ch.send(helpPayload);
+      } catch { /* ignore */ }
       return;
     }
 

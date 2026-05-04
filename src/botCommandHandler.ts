@@ -4,6 +4,7 @@ import type { StreamController } from './commandHandler';
 import type { QueueDisplay } from './queueDisplay';
 import type { AudioQueueDisplay } from './audioQueueDisplay';
 import type { SearchResult } from './youtubePlayer';
+import { buildHelpEmbeds } from './helpEmbeds';
 import {
   isYouTubeUrl,
   searchYouTube,
@@ -186,61 +187,8 @@ export function createBotCommandHandler(
 
     // ── Help ─────────────────────────────────────────────────────────────────
     if (cmd === 'help') {
-      await safeReply(interaction, {
-        embeds: [{
-          color: 0x5865f2,
-          title: 'Available Commands',
-          description: 'The prefix is `!`. Mandatory arguments are in `<>`, optional are in `[]`.',
-          fields: [
-            {
-              name: '🔍 Search & Browse',
-              value: [
-                '`!search <query>` — play top result instantly',
-                '`!play` | `!audio` — play video or audio (YouTube, Spotify, SoundCloud, etc.)',
-                '`!music-search <query>` — search and play as audio',
-                '',
-                '`!search -pick <query>` — choose from top 5',
-                '`!music-search -pick <query>` — choose from top 5 as audio',
-                '',
-                '`!search -channel <name>` — browse a channel\'s videos',
-                '`!next` , `!prev` / `!page <n>` — navigate pages',
-                '`!search-in <kw>` | `!browse-clear` — filter results',
-                '`!pick <n>` — play video by number',
-              ].join('\n'),
-            },
-            {
-              name: '🎵 Audio & Queue',
-              value: [
-                '`!audio-mode` — toggle audio-only mode (all plays become audio)',
-                '`!audio <url>` — play audio direct link',
-                '',
-                '`!aq` — show audio queue',
-                '`!aq-remove <n>` — remove item from audio queue',
-                '`!aq-clear` — clear audio queue',
-                '',
-                '`!loop-audio` — loop current audio track',
-                '`!loop-audio-queue` — loop entire audio queue',
-                '',
-                '`!queue` — show video queue',
-                '`!queue-add <url>` | `!queue-play` | `!queue-clear`',
-              ].join('\n'),
-            },
-            {
-              name: '▶️ Playback Controls',
-              value: [
-                '`!pause` — pause the stream',
-                '`!resume` — resume from where you paused',
-                '`!skip` — skip to next in queue',
-                '`!loop` — loop current video track',
-                '`!loopqueue` — loop entire video queue',
-                '`!stop` — stop and leave voice',
-              ].join('\n'),
-            },
-          ],
-          footer: { text: 'lossai owns all' },
-          timestamp: new Date().toISOString(),
-        }],
-      });
+      // Bot is enabled (we're in the slash command handler), so show slash command syntax
+      await safeReply(interaction, buildHelpEmbeds(true));
       return;
     }
 
