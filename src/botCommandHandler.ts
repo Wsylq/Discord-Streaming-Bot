@@ -31,6 +31,8 @@ export interface BotCommandHandlerDeps {
   voiceChannelId: string;
   textChannelId: string;
   ownerId: string;
+  /** Optional role ID — members with this role can use slash commands in addition to the owner. */
+  allowedRoleId: string | null;
   botClient: Client;
   selfbotClient: SelfbotClient;
   queueDisplay: QueueDisplay | null;
@@ -50,6 +52,7 @@ export function createBotCommandHandler(
     voiceChannelId,
     textChannelId,
     ownerId,
+    allowedRoleId,
     selfbotClient,
     queueDisplay,
     audioQueueDisplay,
@@ -181,7 +184,18 @@ export function createBotCommandHandler(
 
   async function handleInteractionInner(interaction: ChatInputCommandInteraction): Promise<void> {
     // ── Authorization check ──────────────────────────────────────────────────
-    if (interaction.user.id !== ownerId) {
+    // Allow if: user is the owner, OR user has the configured allowed role
+    const isOwner = interaction.user.id === ownerId;
+    const hasRole = allowedRoleId !== null
+      && interaction.member !== null
+      && 'roles' in interaction.member
+      && (
+        Array.isArray(interaction.member.roles)
+          ? (interaction.member.roles as string[]).includes(allowedRoleId)
+          : (interaction.member.roles as { cache: Map<string, unknown> }).cache.has(allowedRoleId)
+      );
+
+    if (!isOwner && !hasRole) {
       await safeReply(interaction, {
         content: 'You are not authorized to use this command.',
         ephemeral: true,

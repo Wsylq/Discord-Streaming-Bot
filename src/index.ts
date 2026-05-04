@@ -63,6 +63,7 @@ async function main(): Promise<void> {
       voiceChannelId: process.env['VOICE_CHANNEL_ID'] ?? '',
       textChannelId: process.env['TEXT_CHANNEL_ID'] ?? '',
       ownerId: process.env['OWNER_ID'] ?? '',
+      allowedRoleId: process.env['ALLOWED_ROLE_ID'] ?? null,
     });
     botManager.start();
     try {

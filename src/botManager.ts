@@ -14,6 +14,8 @@ export interface BotManagerDeps {
   voiceChannelId: string;
   textChannelId: string;
   ownerId: string;
+  /** Optional role ID — members with this role can use slash commands. */
+  allowedRoleId: string | null;
 }
 
 export class BotManager {
@@ -57,6 +59,7 @@ export class BotManager {
       voiceChannelId,
       textChannelId,
       ownerId,
+      allowedRoleId,
     } = this.deps;
 
     // 1. Attempt to fetch the guild from the bot client's guild cache
@@ -92,6 +95,7 @@ export class BotManager {
       voiceChannelId,
       textChannelId,
       ownerId,
+      allowedRoleId,
       botClient,
       selfbotClient,
       queueDisplay: null,
