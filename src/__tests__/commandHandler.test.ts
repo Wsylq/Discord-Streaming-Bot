@@ -9,13 +9,50 @@ import { VideoQueue } from '../videoQueue';
 // Helpers / fakes
 // ---------------------------------------------------------------------------
 
+const OWNER_ID = 'owner-user-123';
+const TEXT_CHANNEL_ID = 'text-channel-456';
+const VOICE_CHANNEL_ID = 'voice-channel-789';
+const GUILD_ID = 'guild-id-000';
+
+// Set env vars before tests run
+beforeAll(() => {
+  process.env['OWNER_ID'] = OWNER_ID;
+  process.env['TEXT_CHANNEL_ID'] = TEXT_CHANNEL_ID;
+  process.env['VOICE_CHANNEL_ID'] = VOICE_CHANNEL_ID;
+  process.env['GUILD_ID'] = GUILD_ID;
+});
+
+afterAll(() => {
+  delete process.env['OWNER_ID'];
+  delete process.env['TEXT_CHANNEL_ID'];
+  delete process.env['VOICE_CHANNEL_ID'];
+  delete process.env['GUILD_ID'];
+});
+
 /** Build a minimal fake StreamController. */
 function makeStreamController(overrides: Partial<StreamController> = {}): StreamController {
   return {
     isStreaming: false,
+    isPaused: false,
+    isInVoice: false,
+    loopTrack: false,
+    loopQueue: false,
+    audioMode: false,
+    loopAudioTrack: false,
+    loopAudioQueue: false,
     start: jest.fn().mockResolvedValue(undefined),
     stop: jest.fn().mockResolvedValue(undefined),
     skip: jest.fn().mockResolvedValue(undefined),
+    pause: jest.fn().mockResolvedValue(true),
+    resume: jest.fn().mockResolvedValue(true),
+    playUrl: jest.fn().mockResolvedValue(undefined),
+    playAudio: jest.fn().mockResolvedValue(undefined),
+    playFromQueue: jest.fn().mockResolvedValue(true),
+    toggleAudioMode: jest.fn().mockReturnValue(false),
+    toggleLoopAudioTrack: jest.fn().mockReturnValue(false),
+    toggleLoopAudioQueue: jest.fn().mockReturnValue(false),
+    toggleLoopTrack: jest.fn().mockReturnValue(false),
+    toggleLoopQueue: jest.fn().mockReturnValue(false),
     ...overrides,
   };
 }
@@ -30,79 +67,92 @@ function makeEmptyQueue(): VideoQueue {
   return { files: [], currentIndex: 0 };
 }
 
-type MessageCreateHandler = (message: FakeMessage) => Promise<void>;
-
-interface FakeVoiceState {
-  channel: FakeVoiceChannel | null;
+// Raw packet type matching what commandHandler.ts expects
+interface RawPacket {
+  t: string;
+  d: {
+    content: string;
+    channel_id: string;
+    author: { id: string };
+  };
 }
 
-interface FakeVoiceChannel {
-  id: string;
-}
-
-interface FakeMember {
-  voice: FakeVoiceState;
-}
+type RawHandler = (packet: RawPacket) => Promise<void>;
 
 interface FakeTextChannel {
   send: jest.Mock;
 }
 
-interface FakeMessage {
-  author: { id: string };
-  content: string;
-  member: FakeMember | null;
-  channel: FakeTextChannel;
-}
-
 /**
- * Creates a fake Discord Client that captures the messageCreate listener so
- * tests can fire messages directly.
+ * Creates a fake Discord Client that captures the raw listener so
+ * tests can fire raw packets directly.
  */
-function makeClient(selfId: string): {
+function makeClient(): {
   client: CommandHandlerDeps['client'];
-  fireMessage: (msg: FakeMessage) => Promise<void>;
+  fireRaw: (packet: RawPacket) => Promise<void>;
+  textChannelSend: jest.Mock;
 } {
-  let handler: MessageCreateHandler | null = null;
+  let handler: RawHandler | null = null;
+  const textChannelSend = jest.fn().mockResolvedValue(undefined);
+
+  const fakeTextChannel: FakeTextChannel = { send: textChannelSend };
 
   const client = {
-    user: { id: selfId },
-    on: jest.fn((event: string, fn: MessageCreateHandler) => {
-      if (event === 'messageCreate') {
+    user: { id: 'selfbot-user' },
+    on: jest.fn((event: string, fn: RawHandler) => {
+      if (event === 'raw') {
         handler = fn;
       }
     }),
+    channels: {
+      fetch: jest.fn().mockResolvedValue(fakeTextChannel),
+    },
+    guilds: {
+      fetch: jest.fn().mockResolvedValue({}),
+    },
   } as unknown as CommandHandlerDeps['client'];
 
-  const fireMessage = async (msg: FakeMessage) => {
-    if (!handler) throw new Error('messageCreate handler not registered');
-    await handler(msg);
+  const fireRaw = async (packet: RawPacket) => {
+    if (!handler) throw new Error('raw handler not registered');
+    await handler(packet);
   };
 
-  return { client, fireMessage };
+  return { client, fireRaw, textChannelSend };
 }
 
-/** Build a fake message authored by the selfbot. */
-function selfMessage(
-  selfId: string,
-  content: string,
-  voiceChannel: FakeVoiceChannel | null = { id: 'vc-1' }
-): FakeMessage {
+/** Build a raw packet from the owner in the text channel. */
+function ownerPacket(content: string): RawPacket {
   return {
-    author: { id: selfId },
-    content,
-    member: { voice: { channel: voiceChannel } },
-    channel: { send: jest.fn().mockResolvedValue(undefined) },
+    t: 'MESSAGE_CREATE',
+    d: {
+      content,
+      channel_id: TEXT_CHANNEL_ID,
+      author: { id: OWNER_ID },
+    },
   };
 }
 
-/** Build a fake message authored by someone else. */
-function otherMessage(content: string): FakeMessage {
+/** Build a raw packet from a non-owner user. */
+function otherUserPacket(content: string): RawPacket {
   return {
-    author: { id: 'other-user-999' },
-    content,
-    member: { voice: { channel: { id: 'vc-1' } } },
-    channel: { send: jest.fn().mockResolvedValue(undefined) },
+    t: 'MESSAGE_CREATE',
+    d: {
+      content,
+      channel_id: TEXT_CHANNEL_ID,
+      author: { id: 'other-user-999' },
+    },
+  };
+}
+
+/** Build a raw packet from the owner but in a different channel. */
+function wrongChannelPacket(content: string): RawPacket {
+  return {
+    t: 'MESSAGE_CREATE',
+    d: {
+      content,
+      channel_id: 'wrong-channel-id',
+      author: { id: OWNER_ID },
+    },
   };
 }
 
@@ -111,13 +161,11 @@ function otherMessage(content: string): FakeMessage {
 // ---------------------------------------------------------------------------
 
 describe('registerCommandHandler', () => {
-  const SELF_ID = 'self-user-123';
-
-  it('registers a messageCreate listener on the client', () => {
-    const { client } = makeClient(SELF_ID);
+  it('registers a raw listener on the client', () => {
+    const { client } = makeClient();
     const sc = makeStreamController();
-    registerCommandHandler({ streamController: sc, queue: makeQueue(), client });
-    expect((client.on as jest.Mock)).toHaveBeenCalledWith('messageCreate', expect.any(Function));
+    registerCommandHandler({ streamController: sc, queue: makeQueue(), client, browser: null, queueDisplay: null, audioQueueDisplay: null });
+    expect((client.on as jest.Mock)).toHaveBeenCalledWith('raw', expect.any(Function));
   });
 
   // -------------------------------------------------------------------------
@@ -125,11 +173,20 @@ describe('registerCommandHandler', () => {
   // -------------------------------------------------------------------------
 
   it('ignores messages from other users', async () => {
-    const { client, fireMessage } = makeClient(SELF_ID);
+    const { client, fireRaw } = makeClient();
     const sc = makeStreamController();
-    registerCommandHandler({ streamController: sc, queue: makeQueue(), client });
+    registerCommandHandler({ streamController: sc, queue: makeQueue(), client, browser: null, queueDisplay: null, audioQueueDisplay: null });
 
-    await fireMessage(otherMessage('!start'));
+    await fireRaw(otherUserPacket('!start'));
+    expect(sc.start).not.toHaveBeenCalled();
+  });
+
+  it('ignores messages from wrong channel', async () => {
+    const { client, fireRaw } = makeClient();
+    const sc = makeStreamController();
+    registerCommandHandler({ streamController: sc, queue: makeQueue(), client, browser: null, queueDisplay: null, audioQueueDisplay: null });
+
+    await fireRaw(wrongChannelPacket('!start'));
     expect(sc.start).not.toHaveBeenCalled();
   });
 
@@ -137,78 +194,51 @@ describe('registerCommandHandler', () => {
   // !start
   // -------------------------------------------------------------------------
 
-  it('!start: calls streamController.start when user is in voice channel and queue is non-empty', async () => {
-    const { client, fireMessage } = makeClient(SELF_ID);
+  it('!start: calls streamController.start when queue is non-empty and not streaming', async () => {
+    const { client, fireRaw } = makeClient();
     const sc = makeStreamController({ isStreaming: false });
-    registerCommandHandler({ streamController: sc, queue: makeQueue(), client });
+    registerCommandHandler({ streamController: sc, queue: makeQueue(), client, browser: null, queueDisplay: null, audioQueueDisplay: null });
 
-    const msg = selfMessage(SELF_ID, '!start', { id: 'vc-1' });
-    await fireMessage(msg);
+    await fireRaw(ownerPacket('!start'));
 
     expect(sc.start).toHaveBeenCalledTimes(1);
   });
 
-  it('!start: sends reply when user is not in a voice channel', async () => {
-    const { client, fireMessage } = makeClient(SELF_ID);
-    const sc = makeStreamController({ isStreaming: false });
-    registerCommandHandler({ streamController: sc, queue: makeQueue(), client });
-
-    const msg = selfMessage(SELF_ID, '!start', null);
-    await fireMessage(msg);
-
-    expect(sc.start).not.toHaveBeenCalled();
-    expect(msg.channel.send).toHaveBeenCalledWith(expect.stringContaining('voice channel'));
-  });
-
   it('!start: sends reply when queue is empty', async () => {
-    const { client, fireMessage } = makeClient(SELF_ID);
+    const { client, fireRaw, textChannelSend } = makeClient();
     const sc = makeStreamController({ isStreaming: false });
-    registerCommandHandler({ streamController: sc, queue: makeEmptyQueue(), client });
+    registerCommandHandler({ streamController: sc, queue: makeEmptyQueue(), client, browser: null, queueDisplay: null, audioQueueDisplay: null });
 
-    const msg = selfMessage(SELF_ID, '!start', { id: 'vc-1' });
-    await fireMessage(msg);
+    await fireRaw(ownerPacket('!start'));
 
     expect(sc.start).not.toHaveBeenCalled();
-    expect(msg.channel.send).toHaveBeenCalledWith(expect.stringContaining('No videos found'));
+    expect(textChannelSend).toHaveBeenCalledWith(expect.stringContaining('No videos found'));
   });
 
   // P5: Idempotent start — already streaming
   it('!start: silently ignores when already streaming (P5)', async () => {
-    const { client, fireMessage } = makeClient(SELF_ID);
+    const { client, fireRaw, textChannelSend } = makeClient();
     const sc = makeStreamController({ isStreaming: true });
-    registerCommandHandler({ streamController: sc, queue: makeQueue(), client });
+    registerCommandHandler({ streamController: sc, queue: makeQueue(), client, browser: null, queueDisplay: null, audioQueueDisplay: null });
 
-    const msg = selfMessage(SELF_ID, '!start', { id: 'vc-1' });
-    await fireMessage(msg);
+    await fireRaw(ownerPacket('!start'));
 
     expect(sc.start).not.toHaveBeenCalled();
-    expect(msg.channel.send).not.toHaveBeenCalled();
+    expect(textChannelSend).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------
   // !stop
   // -------------------------------------------------------------------------
 
-  it('!stop: calls streamController.stop when user is in a voice channel', async () => {
-    const { client, fireMessage } = makeClient(SELF_ID);
+  it('!stop: calls streamController.stop', async () => {
+    const { client, fireRaw } = makeClient();
     const sc = makeStreamController({ isStreaming: true });
-    registerCommandHandler({ streamController: sc, queue: makeQueue(), client });
+    registerCommandHandler({ streamController: sc, queue: makeQueue(), client, browser: null, queueDisplay: null, audioQueueDisplay: null });
 
-    const msg = selfMessage(SELF_ID, '!stop', { id: 'vc-1' });
-    await fireMessage(msg);
+    await fireRaw(ownerPacket('!stop'));
 
     expect(sc.stop).toHaveBeenCalledTimes(1);
-  });
-
-  it('!stop: silently ignores when user is not in a voice channel', async () => {
-    const { client, fireMessage } = makeClient(SELF_ID);
-    const sc = makeStreamController({ isStreaming: true });
-    registerCommandHandler({ streamController: sc, queue: makeQueue(), client });
-
-    const msg = selfMessage(SELF_ID, '!stop', null);
-    await fireMessage(msg);
-
-    expect(sc.stop).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------
@@ -216,23 +246,21 @@ describe('registerCommandHandler', () => {
   // -------------------------------------------------------------------------
 
   it('!skip: calls streamController.skip when streaming', async () => {
-    const { client, fireMessage } = makeClient(SELF_ID);
+    const { client, fireRaw } = makeClient();
     const sc = makeStreamController({ isStreaming: true });
-    registerCommandHandler({ streamController: sc, queue: makeQueue(), client });
+    registerCommandHandler({ streamController: sc, queue: makeQueue(), client, browser: null, queueDisplay: null, audioQueueDisplay: null });
 
-    const msg = selfMessage(SELF_ID, '!skip', { id: 'vc-1' });
-    await fireMessage(msg);
+    await fireRaw(ownerPacket('!skip'));
 
     expect(sc.skip).toHaveBeenCalledTimes(1);
   });
 
   it('!skip: silently ignores when not streaming', async () => {
-    const { client, fireMessage } = makeClient(SELF_ID);
+    const { client, fireRaw } = makeClient();
     const sc = makeStreamController({ isStreaming: false });
-    registerCommandHandler({ streamController: sc, queue: makeQueue(), client });
+    registerCommandHandler({ streamController: sc, queue: makeQueue(), client, browser: null, queueDisplay: null, audioQueueDisplay: null });
 
-    const msg = selfMessage(SELF_ID, '!skip', { id: 'vc-1' });
-    await fireMessage(msg);
+    await fireRaw(ownerPacket('!skip'));
 
     expect(sc.skip).not.toHaveBeenCalled();
   });
@@ -243,8 +271,6 @@ describe('registerCommandHandler', () => {
 // ---------------------------------------------------------------------------
 
 describe('commandHandler property tests', () => {
-  const SELF_ID = 'self-user-123';
-
   /**
    * P4: For any message string that is not exactly !start, !stop, or !skip,
    * the command handler SHALL NOT invoke any command action.
@@ -257,17 +283,17 @@ describe('commandHandler property tests', () => {
       fc.asyncProperty(
         fc.string().filter((s) => s !== '!start' && s !== '!stop' && s !== '!skip'),
         async (content) => {
-          const { client, fireMessage } = makeClient(SELF_ID);
+          const { client, fireRaw, textChannelSend } = makeClient();
           const sc = makeStreamController({ isStreaming: true });
-          registerCommandHandler({ streamController: sc, queue: makeQueue(), client });
+          registerCommandHandler({ streamController: sc, queue: makeQueue(), client, browser: null, queueDisplay: null, audioQueueDisplay: null });
 
-          const msg = selfMessage(SELF_ID, content, { id: 'vc-1' });
-          await fireMessage(msg);
+          await fireRaw(ownerPacket(content));
 
           expect(sc.start).not.toHaveBeenCalled();
           expect(sc.stop).not.toHaveBeenCalled();
           expect(sc.skip).not.toHaveBeenCalled();
-          expect(msg.channel.send).not.toHaveBeenCalled();
+          // Note: some commands like !pause, !resume, !loop etc. may send replies,
+          // so we only check that the core stream control methods are not called.
         }
       ),
       { numRuns: 25 }
@@ -287,17 +313,16 @@ describe('commandHandler property tests', () => {
         // Generate a non-empty queue of arbitrary length
         fc.array(fc.string({ minLength: 1 }), { minLength: 1, maxLength: 10 }),
         async (files) => {
-          const { client, fireMessage } = makeClient(SELF_ID);
+          const { client, fireRaw, textChannelSend } = makeClient();
           // isStreaming is already true
           const sc = makeStreamController({ isStreaming: true });
           const queue = makeQueue(files);
-          registerCommandHandler({ streamController: sc, queue, client });
+          registerCommandHandler({ streamController: sc, queue, client, browser: null, queueDisplay: null, audioQueueDisplay: null });
 
-          const msg = selfMessage(SELF_ID, '!start', { id: 'vc-1' });
-          await fireMessage(msg);
+          await fireRaw(ownerPacket('!start'));
 
           expect(sc.start).not.toHaveBeenCalled();
-          expect(msg.channel.send).not.toHaveBeenCalled();
+          expect(textChannelSend).not.toHaveBeenCalled();
         }
       ),
       { numRuns: 25 }

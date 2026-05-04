@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as fc from 'fast-check';
 
 // Mock dotenv so it never reads the real .env file during tests.
 // Tests set process.env directly to control the config inputs.
@@ -119,5 +120,138 @@ describe('loadConfig', () => {
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(path.resolve(filePath)));
 
     fs.unlinkSync(filePath);
+  });
+
+  // --- Bot config tests ---
+
+  it('returns botEnabled: true and botToken set when DISCORD_BOT_ENABLED=true and token is present', () => {
+    process.env['DISCORD_TOKEN'] = 'test-token-abc';
+    process.env['VIDEO_FOLDER'] = tmpDir;
+    process.env['DISCORD_BOT_ENABLED'] = 'true';
+    process.env['DISCORD_BOT_TOKEN'] = 'bot-token-xyz';
+
+    const loadConfig = requireLoadConfig();
+    const config = loadConfig();
+
+    expect(config.botEnabled).toBe(true);
+    expect(config.botToken).toBe('bot-token-xyz');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('exits with error when DISCORD_BOT_ENABLED=true but DISCORD_BOT_TOKEN is missing', () => {
+    process.env['DISCORD_TOKEN'] = 'test-token-abc';
+    process.env['VIDEO_FOLDER'] = tmpDir;
+    process.env['DISCORD_BOT_ENABLED'] = 'true';
+    delete process.env['DISCORD_BOT_TOKEN'];
+
+    const loadConfig = requireLoadConfig();
+    expect(() => loadConfig()).toThrow('process.exit called with code 1');
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('DISCORD_BOT_TOKEN'));
+  });
+
+  it('exits with error when DISCORD_BOT_ENABLED=true but DISCORD_BOT_TOKEN is empty string', () => {
+    process.env['DISCORD_TOKEN'] = 'test-token-abc';
+    process.env['VIDEO_FOLDER'] = tmpDir;
+    process.env['DISCORD_BOT_ENABLED'] = 'true';
+    process.env['DISCORD_BOT_TOKEN'] = '';
+
+    const loadConfig = requireLoadConfig();
+    expect(() => loadConfig()).toThrow('process.exit called with code 1');
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('DISCORD_BOT_TOKEN'));
+  });
+
+  it('returns botEnabled: false and botToken: null when DISCORD_BOT_ENABLED is absent', () => {
+    process.env['DISCORD_TOKEN'] = 'test-token-abc';
+    process.env['VIDEO_FOLDER'] = tmpDir;
+    delete process.env['DISCORD_BOT_ENABLED'];
+    delete process.env['DISCORD_BOT_TOKEN'];
+
+    const loadConfig = requireLoadConfig();
+    const config = loadConfig();
+
+    expect(config.botEnabled).toBe(false);
+    expect(config.botToken).toBeNull();
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns botEnabled: false and botToken: null when DISCORD_BOT_ENABLED=false', () => {
+    process.env['DISCORD_TOKEN'] = 'test-token-abc';
+    process.env['VIDEO_FOLDER'] = tmpDir;
+    process.env['DISCORD_BOT_ENABLED'] = 'false';
+    delete process.env['DISCORD_BOT_TOKEN'];
+
+    const loadConfig = requireLoadConfig();
+    const config = loadConfig();
+
+    expect(config.botEnabled).toBe(false);
+    expect(config.botToken).toBeNull();
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  // Feature: discord-bot-integration, Property 1: Config fields are correctly mapped from environment variables
+  it('Property 1: for any non-empty bot token with DISCORD_BOT_ENABLED=true, config fields are correctly set', () => {
+    // Validates: Requirements 1.1, 1.2, 8.1, 8.3
+    fc.assert(
+      fc.property(
+        fc.string({ minLength: 1 }),
+        (botToken) => {
+          jest.resetModules();
+          process.env['DISCORD_TOKEN'] = 'test-token-abc';
+          process.env['VIDEO_FOLDER'] = tmpDir;
+          process.env['DISCORD_BOT_ENABLED'] = 'true';
+          process.env['DISCORD_BOT_TOKEN'] = botToken;
+
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { loadConfig } = require('../config');
+          const config = loadConfig();
+
+          expect(config.botEnabled).toBe(true);
+          expect(config.botToken).toBe(botToken);
+        }
+      ),
+      { numRuns: 100 }
+    );
+  });
+
+  // Feature: discord-bot-integration, Property 2: botEnabled defaults to false for any non-"true" value
+  it('Property 2: for any DISCORD_BOT_ENABLED value that is not exactly "true", botEnabled is false and no token validation occurs', () => {
+    // Validates: Requirements 1.3, 8.4, 8.5
+    fc.assert(
+      fc.property(
+        fc.oneof(
+          fc.constant(undefined),
+          fc.constant(''),
+          fc.constant('false'),
+          fc.constant('1'),
+          fc.constant('TRUE'),
+          fc.constant('True'),
+          fc.string().filter((s) => s !== 'true')
+        ),
+        (botEnabledValue) => {
+          jest.resetModules();
+          process.env['DISCORD_TOKEN'] = 'test-token-abc';
+          process.env['VIDEO_FOLDER'] = tmpDir;
+          if (botEnabledValue === undefined) {
+            delete process.env['DISCORD_BOT_ENABLED'];
+          } else {
+            process.env['DISCORD_BOT_ENABLED'] = botEnabledValue;
+          }
+          // Intentionally omit DISCORD_BOT_TOKEN to confirm no validation occurs
+          delete process.env['DISCORD_BOT_TOKEN'];
+
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { loadConfig } = require('../config');
+          const config = loadConfig();
+
+          expect(config.botEnabled).toBe(false);
+          expect(config.botToken).toBeNull();
+          // process.exit should not have been called
+          expect(exitSpy).not.toHaveBeenCalled();
+        }
+      ),
+      { numRuns: 100 }
+    );
   });
 });

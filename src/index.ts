@@ -9,12 +9,19 @@ import { ChannelBrowser } from './channelBrowser';
 import { QueueDisplay } from './queueDisplay';
 import { AudioQueueDisplay } from './audioQueueDisplay';
 import { startPredownloader } from './audioMode';
+import { BotManager } from './botManager';
 
 process.on('uncaughtException', (err: Error) => {
   // SRTP errors from node-datachannel are non-fatal — the stream ended
   // but the process should keep running for the next command
   if (err.message?.includes('SRTP') || err.message?.includes('libdatachannel')) {
     console.warn('[warn] Caught non-fatal native error:', err.message);
+    return;
+  }
+  // Discord interaction errors (10062 = Unknown Interaction) are non-fatal —
+  // the interaction token expired before we could reply. Log and continue.
+  if (err.message?.includes('Unknown Interaction') || err.message?.includes('10062')) {
+    console.warn('[warn] Caught non-fatal Discord interaction error:', err.message);
     return;
   }
   console.error('Uncaught exception:', err.stack ?? err);
@@ -43,6 +50,29 @@ async function main(): Promise<void> {
   const streamController = createStreamController(streamer, notifier, queueDisplay, audioQueueDisplay);
 
   registerCommandHandler({ streamController, queue, client, browser, queueDisplay, audioQueueDisplay });
+
+  // Conditionally start the Discord bot (shares the same streamController instance)
+  if (config.botEnabled) {
+    const { Client: BotClient, GatewayIntentBits } = await import('discord.js');
+    const botClient = new BotClient({ intents: [GatewayIntentBits.Guilds] });
+    const botManager = new BotManager({
+      botClient,
+      selfbotClient: client,
+      streamController,
+      guildId: process.env['GUILD_ID'] ?? '',
+      voiceChannelId: process.env['VOICE_CHANNEL_ID'] ?? '',
+      textChannelId: process.env['TEXT_CHANNEL_ID'] ?? '',
+      ownerId: process.env['OWNER_ID'] ?? '',
+    });
+    botManager.start();
+    try {
+      // config.botToken is guaranteed non-null when botEnabled is true (validated in loadConfig)
+      await botClient.login(config.botToken!);
+    } catch (err) {
+      console.error('Failed to log in to Discord bot:', err);
+      process.exit(1);
+    }
+  }
 
   // Start background audio pre-downloader
   startPredownloader();

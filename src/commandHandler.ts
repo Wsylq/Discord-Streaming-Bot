@@ -160,62 +160,50 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       const helpEmbed = {
         embeds: [{
           color: 0x5865f2,
-          title: '📋 Commands',
+          title: 'Available Commands',
+          description: 'The prefix is `!`. Mandatory arguments are in `<>`, optional are in `[]`.',
           fields: [
             {
-              name: '🔍 Search',
+              name: '🔍 Search & Browse',
               value: [
                 '`!search <query>` — play top result instantly',
+                '`!play` | `!audio` — play video or audio (YouTube, Spotify, SoundCloud, etc.)',
+                '`!music-search <query>` — search and play as audio',
+                '',
                 '`!search -pick <query>` — choose from top 5',
+                '`!music-search -pick <query>` — choose from top 5 as audio',
+                '',
                 '`!search -channel <name>` — browse a channel\'s videos',
-              ].join('\n'),
-            },
-            {
-              name: '📺 Channel Browser',
-              value: [
-                '`!next` / `!prev` — navigate pages',
-                '`!page <n>` — jump to any page directly',
-                '`!search-in <keyword>` — filter by keyword',
-                '`!browse-clear` — clear filter',
+                '`!next` , `!prev` / `!page <n>` — navigate pages',
+                '`!search-in <kw>` | `!browse-clear` — filter results',
                 '`!pick <n>` — play video by number',
               ].join('\n'),
             },
             {
-              name: '🎵 Audio Mode',
+              name: '🎵 Audio & Queue',
               value: [
                 '`!audio-mode` — toggle audio-only mode (all plays become audio)',
-                '`!audio <url>` — play audio (YouTube, Spotify, SoundCloud, etc.)',
-                '`!music-search <query>` — search and play as audio',
-                '`!music-search -pick <query>` — choose from top 5',
-                '  └ `!music-pick <n>`',
+                '`!audio <url>` — play audio direct link',
+                '',
                 '`!aq` — show audio queue',
-                '`!aq-next` / `!aq-prev` — navigate audio queue pages',
-                '`!aq-remove <n>` / `!aq-clear` — manage audio queue',
+                '`!aq-remove <n>` — remove item from audio queue',
+                '`!aq-clear` — clear audio queue',
+                '',
                 '`!loop-audio` — loop current audio track',
                 '`!loop-audio-queue` — loop entire audio queue',
+                '',
+                '`!queue` — show video queue',
+                '`!queue-add <url>` | `!queue-play` | `!queue-clear`',
               ].join('\n'),
             },
             {
-              name: '🎬 Queue',
+              name: '▶️ Playback Controls',
               value: [
-                '`!queue-add <url>` — add a video to the queue',
-                '`!queue` — show the queue embed',
-                '`!queue-play` — start playing from queue',
-                '`!queue-next` / `!queue-prev` — navigate queue pages',
-                '`!queue-remove <n>` — remove item by position',
-                '`!queue-clear` — clear the entire queue',
-              ].join('\n'),
-            },
-            {
-              name: '▶️ Playback',
-              value: [
-                '`!play <url>` — stream a YouTube video',
-                '`!audio <url>` — audio-only mode (YouTube, Spotify, SoundCloud, etc.)',
-                '`!start` — stream from local folder',
-                '`!pause` / `!resume` — pause and resume',
-                '`!skip` — skip to next',
-                '`!loop` — loop current track',
-                '`!loopqueue` — loop entire queue',
+                '`!pause` — pause the stream',
+                '`!resume` — resume from where you paused',
+                '`!skip` — skip to next in queue',
+                '`!loop` — loop current video track',
+                '`!loopqueue` — loop entire video queue',
                 '`!stop` — stop and leave voice',
               ].join('\n'),
             },
@@ -225,7 +213,6 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
         }],
       };
 
-      // Try sending embed via webhook, fall back to plain text
       if (browser) {
         try {
           const { webhookRequest: wr } = await import('./webhookHttp');
@@ -236,15 +223,15 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       }
 
       await reply(
-        '**Commands**\n' +
-        '🔍 **Search**\n' +
-        '`!search <query>` — play top result\n' +
-        '`!search -pick <query>` — choose from top 5\n' +
-        '  └ `!pick <n>`\n' +
-        '`!search -channel <name>` — browse channel videos\n' +
-        '  └ `!next` `!prev` `!page <n>` `!search-in <kw>` `!browse-clear` `!pick <n>`\n\n' +
+        '**Available Commands** — prefix `!`\n\n' +
+        '🔍 **Search & Browse**\n' +
+        '`!search <query>` `!search -pick <query>` `!search -channel <name>`\n' +
+        '`!next` `!prev` `!page <n>` `!pick <n>` `!search-in <kw>`\n\n' +
+        '🎵 **Audio**\n' +
+        '`!audio-mode` `!audio <url>` `!music-search <query>`\n' +
+        '`!aq` `!aq-remove <n>` `!loop-audio` `!loop-audio-queue`\n\n' +
         '▶️ **Playback**\n' +
-        '`!play <url>` `!start` `!pause` `!resume` `!skip` `!loop` `!loopqueue` `!stop`'
+        '`!play <url>` `!pause` `!resume` `!skip` `!loop` `!loopqueue` `!stop`'
       );
       return;
     }

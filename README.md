@@ -22,9 +22,11 @@ A Discord selfbot that streams video directly into voice channels. Point it at a
    - [x] Add Loop
    - [x] Add Search
    - [ ] Add Skip
+   - [ ] Add Now-Playing command
 - [ ] Add Dashboard - Optional
 - [x] Search command Optimizations
-- [ ] Improve the Help Command Embed
+- [x] Improve the Help Command Embed
+- [x] Make a Normal Discord Bot Control This, Keep it Optional
 
 ## Setup
 

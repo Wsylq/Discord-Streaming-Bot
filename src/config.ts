@@ -6,6 +6,8 @@ export interface AppConfig {
   token: string;
   videoFolder: string;
   webhookUrl: string | null;
+  botEnabled: boolean;
+  botToken: string | null;
 }
 
 export function loadConfig(): AppConfig {
@@ -36,5 +38,17 @@ export function loadConfig(): AppConfig {
     process.exit(1);
   }
 
-  return { token, videoFolder, webhookUrl: process.env['WEBHOOK_URL'] ?? null };
+  const botEnabled = process.env['DISCORD_BOT_ENABLED'] === 'true';
+  let botToken: string | null = null;
+
+  if (botEnabled) {
+    const rawBotToken = process.env['DISCORD_BOT_TOKEN'];
+    if (!rawBotToken) {
+      console.error('Missing required configuration key: DISCORD_BOT_TOKEN (required when DISCORD_BOT_ENABLED=true)');
+      process.exit(1);
+    }
+    botToken = rawBotToken;
+  }
+
+  return { token, videoFolder, webhookUrl: process.env['WEBHOOK_URL'] ?? null, botEnabled, botToken };
 }
