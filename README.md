@@ -21,13 +21,13 @@ A Discord selfbot that streams video directly into voice channels. Point it at a
    - [ ] Add Lyrics - Optional
    - [x] Add Loop
    - [x] Add Search
-   - [ ] Add Skip
+   - [x] Add Skip
    - [ ] Add Now-Playing command
 - [ ] Add Dashboard - Optional
 - [x] Search command Optimizations
 - [x] Improve the Help Command Embed
 - [x] Simplify Audio / Video Commands by Hiding them based on what Mode is Active
-- [ ] Make the Bot Not Download the Queue Songs again and again.
+<s>- [ ] Make the Bot Not Download the Queue Songs again and again.</s>
 - [x] Make a Normal Discord Bot Control This, Keep it Optional
 
 ## Setup

@@ -221,10 +221,9 @@ export function createStreamController(
       state.loopAudioUrl = item.url;
 
       console.log(`[audio] Playing pre-downloaded: ${item.title}`);
-      // Record to history for queue loop
-      if (state.loopAudioQueue) {
-        state.audioQueueHistory.push({ url: item.url, title: item.title, duration: item.duration, artist: item.artist });
-      }
+      // NOTE: do NOT push to audioQueueHistory here — history is managed by
+      // toggleLoopAudioQueue() and the loop re-enqueue logic. Pushing here
+      // causes the history to grow unboundedly across loop cycles.
       state.pause = { filePath: audioFile, isTempFile: false, seekSeconds: 0, startedAt: Date.now(), baseSeconds: 0 };
 
       try {
@@ -283,13 +282,16 @@ export function createStreamController(
           await playAudioFromItem(nextItem, textChannel);
         } else if (state.loopAudioQueue && state.audioQueueHistory.length > 0 && state.voiceChannel) {
           console.log(`[audio] Queue loop (item): re-queueing ${state.audioQueueHistory.length} tracks.`);
-          for (const h of state.audioQueueHistory) audioEnqueue(h);
-          state.audioQueueHistory = [];
+          // Re-enqueue all history tracks — keep a copy so the next cycle can loop again
+          const historySnapshot = [...state.audioQueueHistory];
+          for (const h of historySnapshot) audioEnqueue(h);
+          // Don't clear history yet — reset it so the next cycle rebuilds from the snapshot
+          state.audioQueueHistory = [...historySnapshot];
           if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
           const first = audioDequeue();
           if (first) {
             try { await textChannel.send(`🔁 Looping queue — **${first.title}**`); } catch { /* ignore */ }
-            await new Promise(r => setTimeout(r, 800));
+            await new Promise(r => setTimeout(r, 2000));
             await joinVoice(state.voiceChannel);
             await playAudioFromItem(first, textChannel);
           }
@@ -517,15 +519,6 @@ export function createStreamController(
         state.loopAudioUrl = resolvedUrl;
       }
 
-      // Record to history for queue loop
-      if (state.loopAudioQueue) {
-        // Only add if not already in history (avoid duplicates when looping)
-        const alreadyInHistory = state.audioQueueHistory.some(h => h.url === resolvedUrl);
-        if (!alreadyInHistory) {
-          state.audioQueueHistory.push({ url: resolvedUrl, title: resolvedUrl, duration: '?', artist: '' });
-        }
-      }
-
       console.log(`[audio] Playing: ${audioFile}`);
       try { await textChannel.send('🎵 Now playing audio...'); } catch { /* ignore */ }
 
@@ -601,18 +594,25 @@ export function createStreamController(
         if (next && state.voiceChannel) {
           if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
           try { await textChannel.send(`🎵 Next up: **${next.title}**`); } catch { /* ignore */ }
+          // Wait for SRTP context to tear down before starting next track
+          await new Promise(r => setTimeout(r, 800));
+          await joinVoice(state.voiceChannel);
           await playAudioFromItem(next, textChannel);
         } else if (state.loopAudioQueue && state.audioQueueHistory.length > 0 && state.voiceChannel) {
           // Re-enqueue everything from history and restart
           console.log(`[audio] Queue loop: re-queueing ${state.audioQueueHistory.length} tracks.`);
-          for (const item of state.audioQueueHistory) {
+          const historySnapshot = [...state.audioQueueHistory];
+          for (const item of historySnapshot) {
             audioEnqueue(item);
           }
-          state.audioQueueHistory = [];
+          // Keep history intact for the next cycle
+          state.audioQueueHistory = [...historySnapshot];
           if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
           const first = audioDequeue();
           if (first) {
             try { await textChannel.send(`🔁 Looping queue — **${first.title}**`); } catch { /* ignore */ }
+            await new Promise(r => setTimeout(r, 800));
+            await joinVoice(state.voiceChannel);
             await playAudioFromItem(first, textChannel);
           }
         } else {
