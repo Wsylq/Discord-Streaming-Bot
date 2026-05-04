@@ -643,7 +643,6 @@ export function createStreamController(
         // Snapshot current queue into history so already-queued songs get looped too.
         // Also include the currently playing track (it's been dequeued already but is
         // still playing — without this it gets lost from the loop on the first cycle).
-        const { audioGetAll } = require('./audioQueueDb');
         const current = audioGetAll() as Array<{ url: string; title: string; duration: string; artist: string }>;
         const history: Array<{ url: string; title: string; duration: string; artist: string }> = [];
         // Prepend the currently playing track if there is one

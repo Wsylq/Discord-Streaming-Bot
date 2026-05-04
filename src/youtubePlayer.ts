@@ -5,13 +5,7 @@ import * as os from 'os';
 import type { Streamer } from '@dank074/discord-video-stream';
 import { prepareStream, playStream } from '@dank074/discord-video-stream';
 import { ENCODER_OPTIONS } from './encoderOptions';
-
-const YTDLP_BIN = path.join(
-  path.dirname(require.resolve('youtube-dl-exec')),
-  '..',
-  'bin',
-  process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp',
-);
+import { YTDLP_BIN } from './constants';
 
 export function isYouTubeUrl(input: string): boolean {
   return /^https?:\/\/(www\.)?(youtube\.com\/watch|youtu\.be\/)/.test(input);

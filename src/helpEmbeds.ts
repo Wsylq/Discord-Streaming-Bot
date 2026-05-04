@@ -1,3 +1,5 @@
+import { EMBED_FOOTER } from './constants';
+
 /**
  * Builds the help embed array — 3 separate embeds matching the design:
  *   Embed 1 (blurple #5865F2) — Search & Browse  (title + description + footer)
@@ -43,7 +45,7 @@ export function buildHelpEmbeds(botEnabled: boolean): object {
             ].join('\n'),
           },
         ],
-        footer: { text: 'lossai owns all' },
+        footer: { text: EMBED_FOOTER },
         timestamp: new Date().toISOString(),
       },
 

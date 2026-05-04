@@ -9,11 +9,8 @@
  * cached_file: local path to downloaded audio file (null until ready)
  */
 
-import Database from 'better-sqlite3';
-import * as path from 'path';
 import * as fs from 'fs';
-
-const DB_PATH = path.join(process.cwd(), 'queue.db');
+import { getDb } from './db';
 
 export type DownloadStatus = 'pending' | 'downloading' | 'ready' | 'failed';
 
@@ -29,28 +26,17 @@ export interface AudioQueueItem {
   position: number;
 }
 
-let db: Database.Database;
-
-function getDb(): Database.Database {
-  if (!db) {
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS audio_queue (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        url             TEXT    NOT NULL,
-        title           TEXT    NOT NULL DEFAULT '',
-        duration        TEXT    NOT NULL DEFAULT '?',
-        artist          TEXT    NOT NULL DEFAULT '',
-        cached_file     TEXT,
-        download_status TEXT    NOT NULL DEFAULT 'pending',
-        added_at        INTEGER NOT NULL,
-        position        INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_audio_position ON audio_queue(position);
-    `);
-  }
-  return db;
+/** Raw SQLite row shape for audio_queue. */
+interface AudioQueueRow {
+  id: number;
+  url: string;
+  title: string;
+  duration: string;
+  artist: string;
+  cached_file: string | null;
+  download_status: string;
+  added_at: number;
+  position: number;
 }
 
 function nextPosition(): number {
@@ -79,23 +65,25 @@ export function audioEnqueue(item: Pick<AudioQueueItem, 'url' | 'title' | 'durat
 
 export function audioDequeue(): AudioQueueItem | null {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM audio_queue ORDER BY position ASC LIMIT 1').get() as any;
+  const row = db.prepare('SELECT * FROM audio_queue ORDER BY position ASC LIMIT 1').get() as AudioQueueRow | undefined;
   if (!row) return null;
   db.prepare('DELETE FROM audio_queue WHERE id = ?').run(row.id);
   return mapRow(row);
 }
 
 export function audioPeek(): AudioQueueItem | null {
-  const row = getDb().prepare('SELECT * FROM audio_queue ORDER BY position ASC LIMIT 1').get() as any;
+  const row = getDb().prepare('SELECT * FROM audio_queue ORDER BY position ASC LIMIT 1').get() as AudioQueueRow | undefined;
   return row ? mapRow(row) : null;
 }
 
 export function audioGetAll(): AudioQueueItem[] {
-  return (getDb().prepare('SELECT * FROM audio_queue ORDER BY position ASC').all() as any[]).map(mapRow);
+  return (getDb().prepare('SELECT * FROM audio_queue ORDER BY position ASC').all() as AudioQueueRow[]).map(mapRow);
 }
 
 export function audioGetPending(): AudioQueueItem[] {
-  return (getDb().prepare(`SELECT * FROM audio_queue WHERE download_status = 'pending' ORDER BY position ASC`).all() as any[]).map(mapRow);
+  return (getDb()
+    .prepare(`SELECT * FROM audio_queue WHERE download_status = 'pending' ORDER BY position ASC`)
+    .all() as AudioQueueRow[]).map(mapRow);
 }
 
 export function audioSetDownloading(id: number): void {
@@ -106,12 +94,33 @@ export function audioSetReady(id: number, cachedFile: string): void {
   getDb().prepare(`UPDATE audio_queue SET download_status = 'ready', cached_file = ? WHERE id = ?`).run(cachedFile, id);
 }
 
-export function audioSetFailed(id: number): void {
-  getDb().prepare(`UPDATE audio_queue SET download_status = 'failed' WHERE id = ?`).run(id);
+/**
+ * Marks an item as failed and removes it from the queue immediately.
+ * The cached file (if any partial download exists) is deleted.
+ * Returns the item's title so the caller can notify the user.
+ */
+export function audioSetFailed(id: number): string | null {
+  const row = getDb().prepare('SELECT title, cached_file FROM audio_queue WHERE id = ?').get(id) as
+    | Pick<AudioQueueRow, 'title' | 'cached_file'>
+    | undefined;
+
+  if (!row) return null;
+
+  // Clean up any partial download
+  if (row.cached_file) {
+    fs.unlink(row.cached_file, () => {});
+  }
+
+  // Remove the failed item from the queue entirely
+  getDb().prepare('DELETE FROM audio_queue WHERE id = ?').run(id);
+
+  return row.title || null;
 }
 
 export function audioRemoveById(id: number): boolean {
-  const row = getDb().prepare('SELECT cached_file FROM audio_queue WHERE id = ?').get(id) as any;
+  const row = getDb().prepare('SELECT cached_file FROM audio_queue WHERE id = ?').get(id) as
+    | Pick<AudioQueueRow, 'cached_file'>
+    | undefined;
   if (row?.cached_file) {
     fs.unlink(row.cached_file, () => {});
   }
@@ -126,7 +135,6 @@ export function audioRemoveByPosition(pos: number): boolean {
 }
 
 export function audioClearQueue(): number {
-  // Delete cached files
   const all = audioGetAll();
   for (const item of all) {
     if (item.cachedFile) fs.unlink(item.cachedFile, () => {});
@@ -140,7 +148,7 @@ export function audioQueueLength(): number {
   return row.c;
 }
 
-function mapRow(row: any): AudioQueueItem {
+function mapRow(row: AudioQueueRow): AudioQueueItem {
   return {
     id: row.id,
     url: row.url,

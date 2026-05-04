@@ -30,6 +30,8 @@ A Discord selfbot that streams video directly into voice channels. Point it at a
 - <s>[ ] Make the Bot Not Download the Queue Songs again and again.</s>
 - [x] Make a Normal Discord Bot Control This, Keep it Optional
 - [x] Add Role Support for Using Commands. (Only when Using Discord Actual Bot)
+- [ ] Clean and Optimize the Code
+- [ ] Add Spotify and Youtube Playlist Support
 
 ## Setup
 

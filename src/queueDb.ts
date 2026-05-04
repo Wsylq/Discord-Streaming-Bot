@@ -9,10 +9,7 @@
  * Items are removed after they finish playing.
  */
 
-import Database from 'better-sqlite3';
-import * as path from 'path';
-
-const DB_PATH = path.join(process.cwd(), 'queue.db');
+import { getDb } from './db';
 
 export interface QueueItem {
   id: number;
@@ -24,26 +21,15 @@ export interface QueueItem {
   position: number;
 }
 
-let db: Database.Database;
-
-function getDb(): Database.Database {
-  if (!db) {
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS queue_items (
-        id       INTEGER PRIMARY KEY AUTOINCREMENT,
-        url      TEXT    NOT NULL,
-        title    TEXT    NOT NULL DEFAULT '',
-        duration TEXT    NOT NULL DEFAULT '?',
-        channel  TEXT    NOT NULL DEFAULT '',
-        added_at INTEGER NOT NULL,
-        position INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_position ON queue_items(position);
-    `);
-  }
-  return db;
+/** Raw SQLite row shape for queue_items. */
+interface QueueRow {
+  id: number;
+  url: string;
+  title: string;
+  duration: string;
+  channel: string;
+  added_at: number;
+  position: number;
 }
 
 function nextPosition(): number {
@@ -64,19 +50,19 @@ export function enqueue(item: Omit<QueueItem, 'id' | 'addedAt' | 'position'>): Q
 
 export function dequeue(): QueueItem | null {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM queue_items ORDER BY position ASC LIMIT 1').get() as QueueItem | undefined;
+  const row = db.prepare('SELECT * FROM queue_items ORDER BY position ASC LIMIT 1').get() as QueueRow | undefined;
   if (!row) return null;
   db.prepare('DELETE FROM queue_items WHERE id = ?').run(row.id);
   return mapRow(row);
 }
 
 export function peek(): QueueItem | null {
-  const row = getDb().prepare('SELECT * FROM queue_items ORDER BY position ASC LIMIT 1').get() as any;
+  const row = getDb().prepare('SELECT * FROM queue_items ORDER BY position ASC LIMIT 1').get() as QueueRow | undefined;
   return row ? mapRow(row) : null;
 }
 
 export function getAll(): QueueItem[] {
-  return (getDb().prepare('SELECT * FROM queue_items ORDER BY position ASC').all() as any[]).map(mapRow);
+  return (getDb().prepare('SELECT * FROM queue_items ORDER BY position ASC').all() as QueueRow[]).map(mapRow);
 }
 
 export function removeById(id: number): boolean {
@@ -85,7 +71,6 @@ export function removeById(id: number): boolean {
 }
 
 export function removeByPosition(pos: number): boolean {
-  // pos here is 1-based display position, not the internal position column
   const all = getAll();
   if (pos < 1 || pos > all.length) return false;
   return removeById(all[pos - 1].id);
@@ -101,7 +86,7 @@ export function queueLength(): number {
   return row.c;
 }
 
-function mapRow(row: any): QueueItem {
+function mapRow(row: QueueRow): QueueItem {
   return {
     id: row.id,
     url: row.url,

@@ -1,13 +1,6 @@
-import * as path from 'path';
 import { execFile } from 'child_process';
 import { webhookRequest } from './webhookHttp';
-
-const YTDLP_BIN = path.join(
-  path.dirname(require.resolve('youtube-dl-exec')),
-  '..',
-  'bin',
-  process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp',
-);
+import { YTDLP_BIN, EMBED_FOOTER } from './constants';
 
 export interface VideoMeta {
   title: string;
@@ -76,7 +69,7 @@ function buildEmbed(meta: VideoMeta, elapsedSecs: number, status: 'playing' | 'p
         { name: 'Progress', value: `\`${progress}\``, inline: true },
       ],
       timestamp: new Date().toISOString(),
-      footer: { text: 'lossai owns all' },
+      footer: { text: EMBED_FOOTER },
     }],
   };
 }

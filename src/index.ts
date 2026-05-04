@@ -75,8 +75,17 @@ async function main(): Promise<void> {
     }
   }
 
-  // Start background audio pre-downloader
-  startPredownloader();
+  // Start background audio pre-downloader — notify text channel on failure
+  const TEXT_CHANNEL_ID = process.env['TEXT_CHANNEL_ID'] ?? '';
+  startPredownloader(async (failedTitle) => {
+    try {
+      const { TextChannel } = await import('discord.js-selfbot-v13');
+      const ch = await client.channels.fetch(TEXT_CHANNEL_ID);
+      if (ch instanceof TextChannel) {
+        await ch.send(`❌ Pre-download failed for **${failedTitle}** — item removed from queue.`);
+      }
+    } catch { /* ignore — channel may not be available yet */ }
+  });
 
   client.on('ready', () => {
     console.log(`Selfbot ready. Logged in as ${client.user?.username ?? 'unknown'}.`);

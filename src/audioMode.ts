@@ -16,13 +16,7 @@ import {
   audioGetPending, audioSetDownloading, audioSetReady, audioSetFailed,
   type AudioQueueItem,
 } from './audioQueueDb';
-
-const YTDLP_BIN = path.join(
-  path.dirname(require.resolve('youtube-dl-exec')),
-  '..',
-  'bin',
-  process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp',
-);
+import { YTDLP_BIN } from './constants';
 
 // ─── URL detection ───────────────────────────────────────────────────────────
 
@@ -230,15 +224,18 @@ export function deleteAudioFile(filePath: string): void {
 
 let predownloaderRunning = false;
 let predownloaderAbort: AbortController | null = null;
+let onPredownloadFailure: ((title: string) => void) | null = null;
 
 /**
  * Starts the background pre-download loop.
  * Picks up 'pending' items from the audio queue and downloads them one by one.
  * Runs continuously until stopPredownloader() is called.
+ * @param onFailure Optional callback called with the item title when a download fails.
  */
-export function startPredownloader(): void {
+export function startPredownloader(onFailure?: (title: string) => void): void {
   if (predownloaderRunning) return;
   predownloaderRunning = true;
+  onPredownloadFailure = onFailure ?? null;
   predownloaderAbort = new AbortController();
   runPredownloadLoop(predownloaderAbort.signal).catch(() => {});
 }
@@ -247,6 +244,7 @@ export function stopPredownloader(): void {
   predownloaderRunning = false;
   predownloaderAbort?.abort();
   predownloaderAbort = null;
+  onPredownloadFailure = null;
 }
 
 async function runPredownloadLoop(signal: AbortSignal): Promise<void> {
@@ -254,7 +252,6 @@ async function runPredownloadLoop(signal: AbortSignal): Promise<void> {
     const pending = audioGetPending();
 
     if (pending.length === 0) {
-      // Nothing to download — wait and check again
       await new Promise(r => setTimeout(r, 2000));
       continue;
     }
@@ -267,7 +264,7 @@ async function runPredownloadLoop(signal: AbortSignal): Promise<void> {
       const filePath = await downloadAudio(
         item.url,
         (p) => {
-          if (p.percent % 25 < 1) { // log at 0, 25, 50, 75, 100%
+          if (p.percent % 25 < 1) {
             console.log(`[predownload] ${item.title} — ${p.percent.toFixed(0)}%`);
           }
         },
@@ -278,10 +275,13 @@ async function runPredownloadLoop(signal: AbortSignal): Promise<void> {
     } catch (err: unknown) {
       if (signal.aborted) break;
       console.error(`[predownload] Failed: ${item.title}`, err instanceof Error ? err.message : err);
-      audioSetFailed(item.id);
+      // audioSetFailed now removes the item and returns its title
+      const failedTitle = audioSetFailed(item.id);
+      if (failedTitle && onPredownloadFailure) {
+        onPredownloadFailure(failedTitle);
+      }
     }
 
-    // Small pause between downloads
     await new Promise(r => setTimeout(r, 500));
   }
 }
