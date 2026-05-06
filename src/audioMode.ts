@@ -150,7 +150,15 @@ export interface AudioDownloadProgress {
 
 /**
  * Downloads the best available audio from any yt-dlp supported URL.
- * Returns path to the downloaded audio file.
+ *
+ * Speed strategy:
+ * - For YouTube: request bestaudio[ext=webm] which is natively opus in a webm
+ *   container — no ffmpeg re-encode needed, just a raw download.
+ * - Falls back to bestaudio for non-YouTube sources (Spotify-resolved URLs,
+ *   SoundCloud, etc.) which may need extraction.
+ * - 8 concurrent fragments + 25M chunk size saturates most connections.
+ *
+ * Returns path to the downloaded audio file (.webm or .opus).
  */
 export function downloadAudio(
   url: string,
@@ -161,16 +169,40 @@ export function downloadAudio(
     const tmpBase = path.join(os.tmpdir(), `audio-${Date.now()}`);
     const outTemplate = `${tmpBase}.%(ext)s`;
 
-    const args = [
-      '--js-runtimes', 'node',
-      '-f', 'bestaudio',
-      '--extract-audio',
-      '--audio-format', 'opus',
-      '--audio-quality', '0',
-      '--newline', '--progress', '--no-warnings',
-      '-o', outTemplate,
-      url,
-    ];
+    // Prefer native webm/opus (no re-encode). Fall back to bestaudio for
+    // non-YouTube sources where webm may not be available.
+    const isYouTube = /youtube\.com|youtu\.be/.test(url);
+
+    const args = isYouTube
+      ? [
+        '--js-runtimes', 'node',
+        // Native opus in webm — zero re-encode, just download
+        '-f', 'bestaudio[ext=webm]/bestaudio',
+        // No extraction step needed — webm is already playable by ffmpeg
+        '--concurrent-fragments', '8',
+        '--http-chunk-size', '25M',
+        '--buffer-size', '16K',
+        '--no-part',
+        '--no-mtime',
+        '--newline', '--progress', '--no-warnings',
+        '-o', outTemplate,
+        url,
+      ]
+      : [
+        '--js-runtimes', 'node',
+        '-f', 'bestaudio',
+        '--extract-audio',
+        '--audio-format', 'opus',
+        '--audio-quality', '0',
+        '--concurrent-fragments', '8',
+        '--http-chunk-size', '25M',
+        '--buffer-size', '16K',
+        '--no-part',
+        '--no-mtime',
+        '--newline', '--progress', '--no-warnings',
+        '-o', outTemplate,
+        url,
+      ];
 
     const proc = spawn(YTDLP_BIN, args, { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -200,7 +232,7 @@ export function downloadAudio(
       if (abortSignal.aborted) return;
       if (code === 0) {
         if (resolvedPath && fs.existsSync(resolvedPath)) { resolve(resolvedPath); return; }
-        for (const ext of ['opus', 'm4a', 'mp3', 'webm', 'ogg']) {
+        for (const ext of ['webm', 'opus', 'm4a', 'mp3', 'ogg']) {
           const candidate = `${tmpBase}.${ext}`;
           if (fs.existsSync(candidate)) { resolve(candidate); return; }
         }
@@ -237,7 +269,7 @@ export function startPredownloader(onFailure?: (title: string) => void): void {
   predownloaderRunning = true;
   onPredownloadFailure = onFailure ?? null;
   predownloaderAbort = new AbortController();
-  runPredownloadLoop(predownloaderAbort.signal).catch(() => {});
+  runPredownloadLoop(predownloaderAbort.signal).catch(() => { });
 }
 
 export function stopPredownloader(): void {

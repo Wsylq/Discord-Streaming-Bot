@@ -312,8 +312,18 @@ export function downloadVideo(
 
     const args = [
       '--js-runtimes', 'node',
-      '-f', 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best[height<=480]',
+      // Let yt-dlp pick the best ≤480p format automatically via sort
+      // rather than a long fallback chain — faster format negotiation
+      '-f', 'bestvideo[height<=480]+bestaudio/best[height<=480]',
+      '--format-sort', 'ext:mp4:m4a',   // prefer mp4+m4a so merge is a fast mux, not re-encode
       '--merge-output-format', 'mp4',
+      // Speed: 8 parallel fragments + large chunks + bigger read buffer
+      '--concurrent-fragments', '8',
+      '--http-chunk-size', '25M',
+      '--buffer-size', '16K',
+      // Skip unnecessary filesystem ops
+      '--no-part',
+      '--no-mtime',
       '--newline', '--progress', '--no-warnings',
       '-o', tmpFile,
       url,
@@ -323,7 +333,7 @@ export function downloadVideo(
 
     abortSignal.addEventListener('abort', () => {
       proc.kill('SIGKILL');
-      fs.unlink(tmpFile, () => {});
+      fs.unlink(tmpFile, () => { });
       reject(new Error('Download aborted'));
     }, { once: true });
 
@@ -344,7 +354,7 @@ export function downloadVideo(
       if (abortSignal.aborted) return;
       if (code === 0) resolve(tmpFile);
       else {
-        fs.unlink(tmpFile, () => {});
+        fs.unlink(tmpFile, () => { });
         reject(new Error(`yt-dlp exited with code ${code}`));
       }
     });
@@ -376,8 +386,8 @@ export function streamDownloadingScreen(
     screenAbort.signal,
   );
 
-  playStream(output, streamer, { type: 'camera' }, screenAbort.signal).catch(() => {});
-  promise.catch(() => {});
+  playStream(output, streamer, { type: 'camera' }, screenAbort.signal).catch(() => { });
+  promise.catch(() => { });
 
   return () => screenAbort.abort();
 }
