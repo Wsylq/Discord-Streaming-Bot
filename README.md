@@ -32,6 +32,7 @@ A Discord selfbot that streams video directly into voice channels. Point it at a
 - [x] Add Role Support for Using Commands. (Only when Using Discord Actual Bot)
 - [ ] Clean and Optimize the Code
 - [ ] Add Spotify and Youtube Playlist Support
+- [ ] Fix First 30 seconds of Audio and Video being Skipped
 
 ## Setup
 
