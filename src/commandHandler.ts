@@ -8,6 +8,16 @@ import { enqueue, removeByPosition, clearQueue, getAll, queueLength } from './qu
 import { audioEnqueue, audioRemoveByPosition, audioClearQueue, audioGetAll, audioQueueLength } from './audioQueueDb';
 import { buildHelpEmbeds } from './helpEmbeds';
 
+/** Formats seconds into m:ss or h:mm:ss */
+function formatElapsed(secs: number): string {
+  const s = Math.floor(secs);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
 export interface StreamController {
   isStreaming: boolean;
   isPaused: boolean;
@@ -30,6 +40,21 @@ export interface StreamController {
   resume(voiceChannel: VoiceChannel): Promise<boolean>;
   stop(): Promise<void>;
   skip(textChannel?: TextChannel): Promise<void>;
+  /** Returns info about the currently playing track, or null if nothing is playing. */
+  nowPlaying(): NowPlayingInfo | null;
+}
+
+export interface NowPlayingInfo {
+  /** Track title or file name */
+  title: string;
+  /** URL for YouTube/audio tracks, null for local files */
+  url: string | null;
+  /** Elapsed playback time in seconds */
+  elapsedSeconds: number;
+  /** Whether the stream is currently paused */
+  isPaused: boolean;
+  /** 'video' | 'audio' | 'local' */
+  type: 'video' | 'audio' | 'local';
 }
 
 export interface CommandHandlerDeps {
@@ -87,7 +112,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
     }
 
     enqueue({ url, title, duration, channel });
-    if (queueDisplay) queueDisplay.refresh().catch(() => {});
+    if (queueDisplay) queueDisplay.refresh().catch(() => { });
     await reply(`➕ Added to queue: **${title}**`);
   }
 
@@ -104,7 +129,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       } catch { /* ignore */ }
     }
     audioEnqueue({ url, title, duration, artist });
-    if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+    if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
     await reply(`🎵 Added to audio queue: **${title}**`);
   }
 
@@ -450,7 +475,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       if (isNaN(n) || n < 1) { await reply('Usage: `!queue-remove <number>`'); return true; }
       const ok = removeByPosition(n);
       if (ok) {
-        if (queueDisplay) queueDisplay.refresh().catch(() => {});
+        if (queueDisplay) queueDisplay.refresh().catch(() => { });
         await reply(`✅ Removed item #${n} from queue.`);
       } else {
         await reply(`No item at position ${n}.`);
@@ -460,7 +485,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
 
     if (content === '!queue-clear') {
       const count = clearQueue();
-      if (queueDisplay) queueDisplay.refresh().catch(() => {});
+      if (queueDisplay) queueDisplay.refresh().catch(() => { });
       await reply(`🗑️ Cleared ${count} item${count !== 1 ? 's' : ''} from queue.`);
       return true;
     }
@@ -478,7 +503,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
         if (meta) { title = meta.title; duration = meta.duration; channel = meta.channel; }
       } catch { /* ignore */ }
       enqueue({ url, title, duration, channel });
-      if (queueDisplay) queueDisplay.refresh().catch(() => {});
+      if (queueDisplay) queueDisplay.refresh().catch(() => { });
       await reply(`➕ Added to queue: **${title}**`);
       return true;
     }
@@ -517,7 +542,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       if (streamController.isStreaming) {
         // Auto-enqueue to audio queue
         audioEnqueue({ url, title: url, duration: '?', artist: '' });
-        if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+        if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
         await reply(`➕ Added to audio queue.`);
         return true;
       }
@@ -558,7 +583,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
       if (isNaN(n) || n < 1) { await reply('Usage: `!aq-remove <number>`'); return true; }
       const ok = audioRemoveByPosition(n);
       if (ok) {
-        if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+        if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
         await reply(`✅ Removed audio item #${n}.`);
       } else {
         await reply(`No item at position ${n}.`);
@@ -568,7 +593,7 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
 
     if (content === '!aq-clear') {
       const count = audioClearQueue();
-      if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+      if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
       await reply(`🗑️ Cleared ${count} audio item${count !== 1 ? 's' : ''}.`);
       return true;
     }
@@ -664,6 +689,20 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
         const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
         await streamController.skip(textChannel);
       } catch { await streamController.skip(); }
+      return true;
+    }
+
+    if (content === '!np') {
+      const np = streamController.nowPlaying();
+      if (!np) {
+        await reply('Nothing is currently playing.');
+        return true;
+      }
+      const elapsed = formatElapsed(np.elapsedSeconds);
+      const icon = np.type === 'audio' ? '🎵' : np.type === 'local' ? '📁' : '▶️';
+      const status = np.isPaused ? '⏸️ Paused' : '▶️ Playing';
+      const urlPart = np.url ? ` — [link](${np.url})` : '';
+      await reply(`${icon} **Now Playing** ${status}\n**${np.title}**${urlPart}\n⏱️ ${elapsed}`);
       return true;
     }
 

@@ -3,7 +3,7 @@ import { prepareStream, playStream } from '@dank074/discord-video-stream';
 import type { Streamer } from '@dank074/discord-video-stream';
 import { advance, currentFile, isEmpty } from './videoQueue';
 import type { VideoQueue } from './videoQueue';
-import type { StreamController } from './commandHandler';
+import type { StreamController, NowPlayingInfo } from './commandHandler';
 import { ENCODER_OPTIONS } from './encoderOptions';
 import { downloadYouTubeVideo, deleteTempFile, type DownloadProgress } from './youtubePlayer';
 import { downloadAudio, deleteAudioFile, isSpotifyUrl, resolveSpotifyTracks, searchYouTubeMusic } from './audioMode';
@@ -28,19 +28,22 @@ interface StreamState {
   audioMode: boolean;
   loopTrack: boolean;
   loopQueue: boolean;
-  loopAudioTrack: boolean;   // loop current audio track
-  loopAudioQueue: boolean;   // loop entire audio queue
+  loopAudioTrack: boolean;
+  loopAudioQueue: boolean;
   audioQueueHistory: Array<{ url: string; title: string; duration: string; artist: string }>;
   abortController: AbortController | null;
   queue: VideoQueue | null;
   pause: PauseState | null;
   loopTempFile: string | null;
   loopUrl: string | null;
-  // For audio loop: keep the cached audio file and URL
   loopAudioFile: string | null;
   loopAudioUrl: string | null;
   voiceChannel: VoiceChannel | null;
   currentUrl: string | null;
+  /** Human-readable title of the currently playing track */
+  currentTitle: string | null;
+  /** Type of the currently playing track */
+  currentType: 'video' | 'audio' | 'local' | null;
 }
 
 export function createStreamController(
@@ -68,6 +71,8 @@ export function createStreamController(
     loopAudioUrl: null,
     voiceChannel: null,
     currentUrl: null,
+    currentTitle: null,
+    currentType: null,
   };
 
   function cleanupTempFile(): void {
@@ -183,6 +188,10 @@ export function createStreamController(
     state.queue = queue;
     console.log(`[stream] Playing: ${filePath}`);
 
+    // Track what's currently playing for !np
+    state.currentTitle = filePath.split(/[\\/]/).pop() ?? filePath;
+    state.currentType = 'local';
+
     const completed = await playFile(filePath, false);
 
     if (completed && state.isStreaming && !state.isPaused) {
@@ -224,6 +233,8 @@ export function createStreamController(
       // NOTE: do NOT push to audioQueueHistory here — history is managed by
       // toggleLoopAudioQueue() and the loop re-enqueue logic. Pushing here
       // causes the history to grow unboundedly across loop cycles.
+      state.currentTitle = item.title || item.url;
+      state.currentType = 'audio';
       state.pause = { filePath: audioFile, isTempFile: false, seekSeconds: 0, startedAt: Date.now(), baseSeconds: 0 };
 
       try {
@@ -274,7 +285,7 @@ export function createStreamController(
         }
         const nextItem = audioDequeue();
         if (nextItem && state.voiceChannel) {
-          if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+          if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
           try { await textChannel.send(`🎵 Next up: **${nextItem.title}**`); } catch { /* ignore */ }
           // Rejoin for fresh SRTP context between tracks
           await new Promise(r => setTimeout(r, 800));
@@ -287,7 +298,7 @@ export function createStreamController(
           for (const h of historySnapshot) audioEnqueue(h);
           // Don't clear history yet — reset it so the next cycle rebuilds from the snapshot
           state.audioQueueHistory = [...historySnapshot];
-          if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+          if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
           const first = audioDequeue();
           if (first) {
             try { await textChannel.send(`🔁 Looping queue — **${first.title}**`); } catch { /* ignore */ }
@@ -306,11 +317,11 @@ export function createStreamController(
   }
 
   const controller: StreamController = {
-    get isStreaming()  { return state.isStreaming; },
-    get isPaused()     { return state.isPaused; },
-    get isInVoice()    { return state.isInVoice; },
-    get loopTrack()    { return state.loopTrack; },
-    get loopQueue()    { return state.loopQueue; },
+    get isStreaming() { return state.isStreaming; },
+    get isPaused() { return state.isPaused; },
+    get isInVoice() { return state.isInVoice; },
+    get loopTrack() { return state.loopTrack; },
+    get loopQueue() { return state.loopQueue; },
 
     async start(voiceChannel: VoiceChannel, queue: VideoQueue, _textChannel: TextChannel): Promise<void> {
       if (state.isStreaming) return;
@@ -381,8 +392,14 @@ export function createStreamController(
 
       // Fetch metadata now so the embed fires immediately when playback starts
       const meta = notifier ? await fetchVideoMeta(url).catch(() => null) : null;
-      if (meta) console.log(`[webhook] Got meta: "${meta.title}" by ${meta.channel}`);
-      else if (notifier) console.warn('[webhook] fetchVideoMeta returned null');
+      if (meta) {
+        console.log(`[webhook] Got meta: "${meta.title}" by ${meta.channel}`);
+        state.currentTitle = meta.title;
+      } else {
+        if (notifier) console.warn('[webhook] fetchVideoMeta returned null');
+        state.currentTitle = url;
+      }
+      state.currentType = 'video';
 
       const playLoop = async (): Promise<void> => {
         const completed = await playFile(tmpFile, true, 0, meta ?? undefined);
@@ -409,7 +426,7 @@ export function createStreamController(
               // Auto-play next item from persistent queue
               const next = dequeue();
               if (next && state.voiceChannel) {
-                if (queueDisplay) queueDisplay.refresh().catch(() => {});
+                if (queueDisplay) queueDisplay.refresh().catch(() => { });
                 console.log(`[queue] Auto-playing next: ${next.title}`);
                 try { await textChannel.send(`▶️ Next up: **${next.title}**`); } catch { /* ignore */ }
                 state.isStreaming = false; // reset so playUrl can run
@@ -428,7 +445,7 @@ export function createStreamController(
     async playFromQueue(voiceChannel: VoiceChannel, textChannel: TextChannel): Promise<boolean> {
       const next = dequeue();
       if (!next) return false;
-      if (queueDisplay) queueDisplay.refresh().catch(() => {});
+      if (queueDisplay) queueDisplay.refresh().catch(() => { });
       await controller.playUrl(voiceChannel, next.url, textChannel);
       return true;
     },
@@ -464,7 +481,7 @@ export function createStreamController(
               const result = await searchYouTubeMusic(tracks[i].searchQuery, abort.signal).catch(() => null);
               if (result) audioEnqueue({ url: result.url, title: tracks[i].title, duration: result.duration, artist: tracks[i].artist });
             }
-            if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+            if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
             const first = await searchYouTubeMusic(tracks[0].searchQuery, abort.signal);
             resolvedUrl = first.url;
           }
@@ -522,6 +539,8 @@ export function createStreamController(
       console.log(`[audio] Playing: ${audioFile}`);
       try { await textChannel.send('🎵 Now playing audio...'); } catch { /* ignore */ }
 
+      state.currentTitle = state.loopAudioUrl ?? resolvedUrl;
+      state.currentType = 'audio';
       state.pause = { filePath: audioFile, isTempFile: true, seekSeconds: 0, startedAt: Date.now(), baseSeconds: 0 };
 
       try {
@@ -592,7 +611,7 @@ export function createStreamController(
         // Auto-play next from audio queue
         const next = audioDequeue();
         if (next && state.voiceChannel) {
-          if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+          if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
           try { await textChannel.send(`🎵 Next up: **${next.title}**`); } catch { /* ignore */ }
           // Wait for SRTP context to tear down before starting next track
           await new Promise(r => setTimeout(r, 800));
@@ -607,7 +626,7 @@ export function createStreamController(
           }
           // Keep history intact for the next cycle
           state.audioQueueHistory = [...historySnapshot];
-          if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+          if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
           const first = audioDequeue();
           if (first) {
             try { await textChannel.send(`🔁 Looping queue — **${first.title}**`); } catch { /* ignore */ }
@@ -704,7 +723,7 @@ export function createStreamController(
       try { streamer.leaveVoice(); } catch { /* ignore */ }
       state.isInVoice = false;
 
-      if (notifier) notifier.pause(seekSeconds).catch(() => {});
+      if (notifier) notifier.pause(seekSeconds).catch(() => { });
       console.log(`[stream] Paused at ${seekSeconds.toFixed(1)}s`);
       return true;
     },
@@ -719,7 +738,7 @@ export function createStreamController(
 
       console.log(`[stream] Resuming from ${seekSeconds.toFixed(1)}s`);
 
-      if (notifier) notifier.resume(seekSeconds).catch(() => {});
+      if (notifier) notifier.resume(seekSeconds).catch(() => { });
 
       // isInVoice is already false (we left on pause), so joinVoice
       // goes straight to joining without the leave+wait cycle
@@ -778,6 +797,8 @@ export function createStreamController(
       state.queue = null;
       state.pause = null;
       state.currentUrl = null;
+      state.currentTitle = null;
+      state.currentType = null;
       // Clean up audio loop cache
       if (state.loopAudioFile) {
         deleteAudioFile(state.loopAudioFile);
@@ -820,7 +841,7 @@ export function createStreamController(
         }
         const next = dequeue();
         if (!next) return false;
-        if (queueDisplay) queueDisplay.refresh().catch(() => {});
+        if (queueDisplay) queueDisplay.refresh().catch(() => { });
         console.log(`[queue] Skip → playing next from queue: ${next.title}`);
         try { await textChannel.send(`▶️ Next up: **${next.title}**`); } catch { /* ignore */ }
         // Brief wait for the aborted stream to fully clean up
@@ -860,6 +881,23 @@ export function createStreamController(
         console.error('[stream] Unhandled skip error:', err);
         state.isStreaming = false;
       });
+    },
+
+    nowPlaying(): NowPlayingInfo | null {
+      if (!state.isStreaming && !state.isPaused) return null;
+      if (!state.pause) return null;
+
+      const elapsed = state.isPaused
+        ? state.pause.seekSeconds
+        : state.pause.baseSeconds + (Date.now() - state.pause.startedAt) / 1000;
+
+      return {
+        title: state.currentTitle ?? state.currentUrl ?? state.pause.filePath.split(/[\\/]/).pop() ?? 'Unknown',
+        url: state.currentUrl,
+        elapsedSeconds: Math.max(0, elapsed),
+        isPaused: state.isPaused,
+        type: state.currentType ?? (state.audioMode ? 'audio' : 'video'),
+      };
     },
   };
 

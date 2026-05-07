@@ -5,6 +5,16 @@ import type { QueueDisplay } from './queueDisplay';
 import type { AudioQueueDisplay } from './audioQueueDisplay';
 import type { SearchResult } from './youtubePlayer';
 import { buildHelpEmbeds } from './helpEmbeds';
+
+/** Formats seconds into m:ss or h:mm:ss */
+function formatElapsed(secs: number): string {
+  const s = Math.floor(secs);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  return `${m}:${String(sec).padStart(2, '0')}`;
+}
 import {
   isYouTubeUrl,
   searchYouTube,
@@ -87,7 +97,7 @@ export function createBotCommandHandler(
       } catch { /* ignore */ }
     }
     enqueue({ url, title, duration, channel });
-    if (queueDisplay) queueDisplay.refresh().catch(() => {});
+    if (queueDisplay) queueDisplay.refresh().catch(() => { });
     return `➕ Added to queue: **${title}**`;
   }
 
@@ -103,7 +113,7 @@ export function createBotCommandHandler(
       } catch { /* ignore */ }
     }
     audioEnqueue({ url, title, duration, artist });
-    if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+    if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
     return `🎵 Added to audio queue: **${title}**`;
   }
 
@@ -212,6 +222,33 @@ export function createBotCommandHandler(
       return;
     }
 
+    // ── Now Playing ──────────────────────────────────────────────────────────
+    if (cmd === 'np') {
+      const np = streamController.nowPlaying();
+      if (!np) {
+        await safeReply(interaction, { content: 'Nothing is currently playing.', ephemeral: true });
+        return;
+      }
+      const elapsed = formatElapsed(np.elapsedSeconds);
+      const icon = np.type === 'audio' ? '🎵' : np.type === 'local' ? '📁' : '▶️';
+      const status = np.isPaused ? '⏸️ Paused' : '▶️ Playing';
+      await safeReply(interaction, {
+        embeds: [{
+          color: np.isPaused ? 0xfaa61a : (np.type === 'audio' ? 0x57f287 : 0x5865f2),
+          title: `${icon} Now Playing — ${status}`,
+          description: np.url
+            ? `**[${np.title}](${np.url})**`
+            : `**${np.title}**`,
+          fields: [
+            { name: '⏱️ Elapsed', value: `\`${elapsed}\``, inline: true },
+            { name: '🎚️ Type', value: np.type.charAt(0).toUpperCase() + np.type.slice(1), inline: true },
+          ],
+          timestamp: new Date().toISOString(),
+        }],
+      });
+      return;
+    }
+
     // ── Playback control commands — defer first since StreamController ops are async ──
 
     if (cmd === 'pause') {
@@ -312,14 +349,14 @@ export function createBotCommandHandler(
 
     if (cmd === 'aq-clear') {
       const count = audioClearQueue();
-      if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+      if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
       await safeReply(interaction, `🗑️ Cleared ${count} audio item${count !== 1 ? 's' : ''}.`);
       return;
     }
 
     if (cmd === 'queue-clear') {
       const count = clearQueue();
-      if (queueDisplay) queueDisplay.refresh().catch(() => {});
+      if (queueDisplay) queueDisplay.refresh().catch(() => { });
       await safeReply(interaction, `🗑️ Cleared ${count} item${count !== 1 ? 's' : ''} from queue.`);
       return;
     }
@@ -354,7 +391,7 @@ export function createBotCommandHandler(
       const n = interaction.options.getInteger('number', true);
       const ok = audioRemoveByPosition(n);
       if (ok) {
-        if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+        if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
         await safeReply(interaction, `✅ Removed audio item #${n}.`);
       } else {
         await safeReply(interaction, `No item at position ${n}.`);
@@ -439,7 +476,7 @@ export function createBotCommandHandler(
       const url = interaction.options.getString('url', true);
       if (streamController.isStreaming) {
         audioEnqueue({ url, title: url, duration: '?', artist: '' });
-        if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => {});
+        if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
         await safeReply(interaction, '➕ Added to audio queue.');
         return;
       }

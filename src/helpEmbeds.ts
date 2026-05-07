@@ -83,6 +83,7 @@ export function buildHelpEmbeds(botEnabled: boolean): object {
               `${cmd('pause')} — pause the stream`,
               `${cmd('resume')} — resume the stream`,
               `${cmd('skip')} — skip to next in queue`,
+              `${cmd('np')} — show what's currently playing`,
               `${cmd('loop')} — loop current track`,
               `${cmd('loopqueue')} — loop entire queue`,
               `${cmd('stop')} — stop and leave voice`,

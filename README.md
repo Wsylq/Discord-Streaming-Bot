@@ -27,7 +27,7 @@ A Discord selfbot that streams video directly into voice channels. Point it at a
 - [x] Search command Optimizations
 - [x] Improve the Help Command Embed
 - [x] Simplify Audio / Video Commands by Hiding them based on what Mode is Active
-- <s>[ ] Make the Bot Not Download the Queue Songs again and again.</s>
+- <s>[x] Make the Bot Not Download the Queue Songs again and again.</s>
 - [x] Make a Normal Discord Bot Control This, Keep it Optional
 - [x] Add Role Support for Using Commands. (Only when Using Discord Actual Bot)
 - [x] Clean and Optimize the Code

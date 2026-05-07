@@ -2,12 +2,13 @@ import type { ApplicationCommandData } from 'discord.js';
 
 // ── Commands always available regardless of audio mode ────────────────────────
 const SHARED_COMMANDS: ApplicationCommandData[] = [
-  { name: 'help',       type: 1, description: 'Show available commands' },
+  { name: 'help', type: 1, description: 'Show available commands' },
+  { name: 'np', type: 1, description: 'Show what is currently playing' },
   { name: 'audio-mode', type: 1, description: 'Toggle audio-only mode' },
-  { name: 'pause',      type: 1, description: 'Pause the stream' },
-  { name: 'resume',     type: 1, description: 'Resume the stream' },
-  { name: 'stop',       type: 1, description: 'Stop and leave voice' },
-  { name: 'skip',       type: 1, description: 'Skip to next in queue' },
+  { name: 'pause', type: 1, description: 'Pause the stream' },
+  { name: 'resume', type: 1, description: 'Resume the stream' },
+  { name: 'stop', type: 1, description: 'Stop and leave voice' },
+  { name: 'skip', type: 1, description: 'Skip to next in queue' },
 ];
 
 // ── Video streaming commands (shown when audio mode is OFF) ───────────────────
@@ -43,16 +44,16 @@ const VIDEO_COMMANDS: ApplicationCommandData[] = [
     description: 'Pick from pending search results',
     options: [{ name: 'number', type: 4, description: 'Result number', required: true }],
   },
-  { name: 'loop',      type: 1, description: 'Toggle loop current video track' },
+  { name: 'loop', type: 1, description: 'Toggle loop current video track' },
   { name: 'loopqueue', type: 1, description: 'Toggle loop entire video queue' },
-  { name: 'queue',     type: 1, description: 'Show video queue' },
+  { name: 'queue', type: 1, description: 'Show video queue' },
   {
     name: 'queue-add',
     type: 1,
     description: 'Add a YouTube URL to the video queue',
     options: [{ name: 'url', type: 3, description: 'YouTube URL', required: true }],
   },
-  { name: 'queue-play',  type: 1, description: 'Play from video queue' },
+  { name: 'queue-play', type: 1, description: 'Play from video queue' },
   { name: 'queue-clear', type: 1, description: 'Clear the video queue' },
 ];
 
@@ -82,9 +83,9 @@ const AUDIO_COMMANDS: ApplicationCommandData[] = [
     description: 'Pick from pending search results',
     options: [{ name: 'number', type: 4, description: 'Result number', required: true }],
   },
-  { name: 'loop-audio',       type: 1, description: 'Toggle loop current audio track' },
+  { name: 'loop-audio', type: 1, description: 'Toggle loop current audio track' },
   { name: 'loop-audio-queue', type: 1, description: 'Toggle loop entire audio queue' },
-  { name: 'aq',               type: 1, description: 'Show audio queue' },
+  { name: 'aq', type: 1, description: 'Show audio queue' },
   {
     name: 'aq-remove',
     type: 1,
