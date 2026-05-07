@@ -19,6 +19,8 @@ interface PauseState {
   seekSeconds: number;
   startedAt: number;
   baseSeconds: number;
+  /** True when the paused file is an audio-only file (webm/opus) requiring the ffmpeg pipeline. */
+  isAudioFile: boolean;
 }
 
 interface StreamState {
@@ -129,6 +131,7 @@ export function createStreamController(
       seekSeconds,
       startedAt: Date.now(),
       baseSeconds: seekSeconds,
+      isAudioFile: false,
     };
 
     try {
@@ -235,7 +238,7 @@ export function createStreamController(
       // causes the history to grow unboundedly across loop cycles.
       state.currentTitle = item.title || item.url;
       state.currentType = 'audio';
-      state.pause = { filePath: audioFile, isTempFile: false, seekSeconds: 0, startedAt: Date.now(), baseSeconds: 0 };
+      state.pause = { filePath: audioFile, isTempFile: false, seekSeconds: 0, startedAt: Date.now(), baseSeconds: 0, isAudioFile: true };
 
       try {
         const { PassThrough } = await import('stream');
@@ -571,7 +574,7 @@ export function createStreamController(
 
       state.currentTitle = state.loopAudioUrl ?? resolvedUrl;
       state.currentType = 'audio';
-      state.pause = { filePath: audioFile, isTempFile: true, seekSeconds: 0, startedAt: Date.now(), baseSeconds: 0 };
+      state.pause = { filePath: audioFile, isTempFile: true, seekSeconds: 0, startedAt: Date.now(), baseSeconds: 0, isAudioFile: true };
 
       try {
         const { PassThrough } = await import('stream');
@@ -761,7 +764,7 @@ export function createStreamController(
     async resume(voiceChannel: VoiceChannel): Promise<boolean> {
       if (!state.isPaused || !state.pause) return false;
 
-      const { filePath, isTempFile, seekSeconds } = state.pause;
+      const { filePath, isTempFile, seekSeconds, isAudioFile } = state.pause;
 
       state.isPaused = false;
       state.isStreaming = true;
@@ -770,8 +773,6 @@ export function createStreamController(
 
       if (notifier) notifier.resume(seekSeconds).catch(() => { });
 
-      // isInVoice is already false (we left on pause), so joinVoice
-      // goes straight to joining without the leave+wait cycle
       const joined = await joinVoice(voiceChannel);
       if (!joined) {
         state.isStreaming = false;
@@ -779,6 +780,54 @@ export function createStreamController(
         return false;
       }
 
+      if (isAudioFile) {
+        // Audio files need the ffmpeg PassThrough pipeline, not prepareStream
+        const abort = new AbortController();
+        state.abortController = abort;
+
+        try {
+          const { PassThrough } = await import('stream');
+          const { spawn: spawnFfmpeg } = await import('child_process');
+          const ffmpegBin = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+          const output = new PassThrough();
+          const seekArgs = seekSeconds > 0 ? ['-ss', seekSeconds.toFixed(3)] : [];
+          const ffmpegArgs = [
+            ...seekArgs,
+            '-i', filePath,
+            '-f', 'lavfi', '-i', 'color=c=black:s=2x2:r=1',
+            '-map', '0:a:0', '-map', '1:v:0',
+            '-c:a', 'libopus', '-b:a', '320k', '-ar', '48000', '-ac', '2',
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+            '-b:v', '10k', '-r', '1', '-pix_fmt', 'yuv420p',
+            '-shortest', '-f', 'nut', 'pipe:1',
+          ];
+          const ffmpegProc = spawnFfmpeg(ffmpegBin, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+          ffmpegProc.stdout?.pipe(output);
+          ffmpegProc.stderr?.on('data', (chunk: Buffer) => {
+            const msg = chunk.toString().trim();
+            if (msg && !msg.includes('frame=') && !msg.includes('size=')) console.error('[ffmpeg resume]', msg.split('\n')[0]);
+          });
+          abort.signal.addEventListener('abort', () => { ffmpegProc.kill('SIGKILL'); }, { once: true });
+          const ffmpegDone = new Promise<void>((res) => { ffmpegProc.on('close', () => res()); ffmpegProc.on('error', () => res()); });
+
+          await playStream(output, streamer, { type: 'camera', readrateInitialBurst: 10 }, abort.signal);
+          if (state.pause) state.pause = { ...state.pause, startedAt: Date.now() };
+          await ffmpegDone;
+        } catch (err: unknown) {
+          if (!(err instanceof Error && (err.name === 'AbortError' || err.message?.includes('aborted')))) {
+            console.error('[audio] Resume stream error:', err);
+          }
+        }
+
+        if (!state.isPaused) {
+          state.pause = null;
+          state.isStreaming = false;
+          state.abortController = null;
+        }
+        return true;
+      }
+
+      // Video / local file — use the standard prepareStream path
       const completed = await playFile(filePath, isTempFile, seekSeconds);
 
       if (!state.isPaused) {
@@ -794,7 +843,6 @@ export function createStreamController(
             await playNext(advance(state.queue));
           }
         } else if (completed && state.isStreaming && isTempFile && state.loopTrack && state.loopTempFile) {
-          // Loop YouTube video from start
           const completed2 = await playFile(state.loopTempFile, true);
           if (!completed2 || !state.loopTrack) {
             cleanupLoopTempFile();
