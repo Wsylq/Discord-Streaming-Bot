@@ -24,6 +24,8 @@ export interface AudioQueueItem {
   downloadStatus: DownloadStatus;
   addedAt: number;
   position: number;
+  /** When set, the pre-downloader searches YouTube Music for this query before downloading. */
+  spotifySearchQuery: string | null;
 }
 
 /** Raw SQLite row shape for audio_queue. */
@@ -37,6 +39,7 @@ interface AudioQueueRow {
   download_status: string;
   added_at: number;
   position: number;
+  spotify_search_query: string | null;
 }
 
 function nextPosition(): number {
@@ -44,20 +47,25 @@ function nextPosition(): number {
   return (row.m ?? 0) + 1;
 }
 
-export function audioEnqueue(item: Pick<AudioQueueItem, 'url' | 'title' | 'duration' | 'artist'>): AudioQueueItem {
+export function audioEnqueue(item: Pick<AudioQueueItem, 'url' | 'title' | 'duration' | 'artist'> & { spotifySearchQuery?: string | null }): AudioQueueItem {
   const db = getDb();
   const pos = nextPosition();
   const now = Date.now();
+  const searchQuery = item.spotifySearchQuery ?? null;
   const result = db.prepare(
-    `INSERT INTO audio_queue (url, title, duration, artist, cached_file, download_status, added_at, position)
-     VALUES (?, ?, ?, ?, NULL, 'pending', ?, ?)`,
-  ).run(item.url, item.title, item.duration, item.artist, now, pos);
+    `INSERT INTO audio_queue (url, title, duration, artist, cached_file, download_status, spotify_search_query, added_at, position)
+     VALUES (?, ?, ?, ?, NULL, 'pending', ?, ?, ?)`,
+  ).run(item.url, item.title, item.duration, item.artist, searchQuery, now, pos);
 
   return {
     id: result.lastInsertRowid as number,
-    ...item,
+    url: item.url,
+    title: item.title,
+    duration: item.duration,
+    artist: item.artist,
     cachedFile: null,
     downloadStatus: 'pending',
+    spotifySearchQuery: searchQuery,
     addedAt: now,
     position: pos,
   };
@@ -90,6 +98,11 @@ export function audioSetDownloading(id: number): void {
   getDb().prepare(`UPDATE audio_queue SET download_status = 'downloading' WHERE id = ?`).run(id);
 }
 
+/** Updates the URL of a pending item (used when resolving a Spotify search query to a YouTube URL). */
+export function audioSetUrl(id: number, url: string): void {
+  getDb().prepare(`UPDATE audio_queue SET url = ? WHERE id = ?`).run(url, id);
+}
+
 export function audioSetReady(id: number, cachedFile: string): void {
   getDb().prepare(`UPDATE audio_queue SET download_status = 'ready', cached_file = ? WHERE id = ?`).run(cachedFile, id);
 }
@@ -108,7 +121,7 @@ export function audioSetFailed(id: number): string | null {
 
   // Clean up any partial download
   if (row.cached_file) {
-    fs.unlink(row.cached_file, () => {});
+    fs.unlink(row.cached_file, () => { });
   }
 
   // Remove the failed item from the queue entirely
@@ -122,7 +135,7 @@ export function audioRemoveById(id: number): boolean {
     | Pick<AudioQueueRow, 'cached_file'>
     | undefined;
   if (row?.cached_file) {
-    fs.unlink(row.cached_file, () => {});
+    fs.unlink(row.cached_file, () => { });
   }
   const result = getDb().prepare('DELETE FROM audio_queue WHERE id = ?').run(id);
   return result.changes > 0;
@@ -137,7 +150,7 @@ export function audioRemoveByPosition(pos: number): boolean {
 export function audioClearQueue(): number {
   const all = audioGetAll();
   for (const item of all) {
-    if (item.cachedFile) fs.unlink(item.cachedFile, () => {});
+    if (item.cachedFile) fs.unlink(item.cachedFile, () => { });
   }
   const result = getDb().prepare('DELETE FROM audio_queue').run();
   return result.changes;
@@ -157,6 +170,7 @@ function mapRow(row: AudioQueueRow): AudioQueueItem {
     artist: row.artist,
     cachedFile: row.cached_file ?? null,
     downloadStatus: row.download_status as DownloadStatus,
+    spotifySearchQuery: row.spotify_search_query ?? null,
     addedAt: row.added_at,
     position: row.position,
   };

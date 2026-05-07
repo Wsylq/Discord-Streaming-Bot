@@ -28,18 +28,26 @@ export function getDb(): Database.Database {
       CREATE INDEX IF NOT EXISTS idx_position ON queue_items(position);
 
       CREATE TABLE IF NOT EXISTS audio_queue (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        url             TEXT    NOT NULL,
-        title           TEXT    NOT NULL DEFAULT '',
-        duration        TEXT    NOT NULL DEFAULT '?',
-        artist          TEXT    NOT NULL DEFAULT '',
-        cached_file     TEXT,
-        download_status TEXT    NOT NULL DEFAULT 'pending',
-        added_at        INTEGER NOT NULL,
-        position        INTEGER NOT NULL
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        url                  TEXT    NOT NULL,
+        title                TEXT    NOT NULL DEFAULT '',
+        duration             TEXT    NOT NULL DEFAULT '?',
+        artist               TEXT    NOT NULL DEFAULT '',
+        cached_file          TEXT,
+        download_status      TEXT    NOT NULL DEFAULT 'pending',
+        spotify_search_query TEXT,
+        added_at             INTEGER NOT NULL,
+        position             INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_audio_position ON audio_queue(position);
     `);
+
+    // Migrate existing databases that don't have spotify_search_query yet
+    const cols = (_db.prepare(`PRAGMA table_info(audio_queue)`).all() as Array<{ name: string }>)
+      .map(c => c.name);
+    if (!cols.includes('spotify_search_query')) {
+      _db.exec(`ALTER TABLE audio_queue ADD COLUMN spotify_search_query TEXT`);
+    }
   }
   return _db;
 }

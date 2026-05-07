@@ -311,8 +311,21 @@ export function createStreamController(
         }
       }
     } else {
-      // Not pre-downloaded — fall back to normal playAudio
-      await controller.playAudio(state.voiceChannel, item.url, textChannel);
+      // Not pre-downloaded — fall back to normal playAudio.
+      // If the URL is still an unresolved Spotify placeholder, the pre-downloader
+      // hasn't finished resolving it yet. In that case, resolve it now inline.
+      let playUrl = item.url;
+      if (item.url.startsWith('spotify:unresolved:') && item.spotifySearchQuery) {
+        try {
+          const result = await searchYouTubeMusic(item.spotifySearchQuery, new AbortController().signal);
+          playUrl = result.url;
+        } catch (err) {
+          console.error('[audio] Failed to resolve Spotify track for playback:', err);
+          try { await textChannel.send(`❌ Could not find **${item.title}** on YouTube Music.`); } catch { /* ignore */ }
+          return;
+        }
+      }
+      await controller.playAudio(state.voiceChannel, playUrl, textChannel);
     }
   }
 
@@ -466,24 +479,41 @@ export function createStreamController(
       let resolvedUrl = url;
       if (isSpotifyUrl(url)) {
         try {
-          await textChannel.send('🎵 Resolving Spotify track...');
+          await textChannel.send('🎵 Resolving Spotify...');
           const tracks = await resolveSpotifyTracks(url, abort.signal);
           if (tracks.length === 0) throw new Error('No tracks found');
 
           if (tracks.length === 1) {
+            // Single track — resolve immediately and play
             await textChannel.send(`🔍 Searching for **${tracks[0].searchQuery}**...`);
             const result = await searchYouTubeMusic(tracks[0].searchQuery, abort.signal);
             resolvedUrl = result.url;
           } else {
-            // Album/playlist — enqueue rest, play first
-            await textChannel.send(`📀 Found **${tracks.length} tracks**. Queueing...`);
+            // Album/playlist — enqueue ALL tracks immediately with their Spotify search
+            // query. The pre-downloader resolves each one to YouTube Music lazily,
+            // so the first track starts playing right away without waiting for all
+            // N searches to complete.
+            await textChannel.send(`📀 Found **${tracks.length} tracks** — queueing playlist...`);
+
+            // Enqueue tracks 2..N with spotifySearchQuery so the pre-downloader
+            // resolves them in the background
             for (let i = 1; i < tracks.length; i++) {
-              const result = await searchYouTubeMusic(tracks[i].searchQuery, abort.signal).catch(() => null);
-              if (result) audioEnqueue({ url: result.url, title: tracks[i].title, duration: result.duration, artist: tracks[i].artist });
+              audioEnqueue({
+                url: `spotify:unresolved:${tracks[i].searchQuery}`, // placeholder — replaced by pre-downloader
+                title: tracks[i].title,
+                duration: '?',
+                artist: tracks[i].artist,
+                spotifySearchQuery: tracks[i].searchQuery,
+              });
             }
             if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
+
+            // Resolve and play the first track immediately
+            await textChannel.send(`🔍 Searching for **${tracks[0].searchQuery}**...`);
             const first = await searchYouTubeMusic(tracks[0].searchQuery, abort.signal);
             resolvedUrl = first.url;
+
+            await textChannel.send(`🎵 Playing **${tracks[0].title}** — ${tracks.length} tracks queued`);
           }
         } catch (err: unknown) {
           state.isStreaming = false;

@@ -13,7 +13,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import {
-  audioGetPending, audioSetDownloading, audioSetReady, audioSetFailed,
+  audioGetPending, audioSetDownloading, audioSetReady, audioSetFailed, audioSetUrl,
   type AudioQueueItem,
 } from './audioQueueDb';
 import { YTDLP_BIN } from './constants';
@@ -29,7 +29,9 @@ export function isAudioUrl(url: string): boolean {
   return url.startsWith('http');
 }
 
-// ─── Spotify metadata via yt-dlp ─────────────────────────────────────────────
+// ─── Spotify metadata via spotify-url-info ───────────────────────────────────
+// Uses spotify-url-info which scrapes Spotify's public embed pages.
+// No API key or authentication required.
 
 export interface SpotifyTrackInfo {
   title: string;
@@ -38,62 +40,35 @@ export interface SpotifyTrackInfo {
 }
 
 /**
- * Uses yt-dlp's built-in Spotify extractor to get track metadata.
- * No API key needed — yt-dlp scrapes open.spotify.com.
- * For playlists/albums, returns all tracks.
+ * Resolves a Spotify track/album/playlist URL to a list of track metadata.
+ * Uses spotify-url-info — no API key needed, scrapes public embed pages.
  */
-export function resolveSpotifyTracks(
+export async function resolveSpotifyTracks(
   url: string,
-  abortSignal: AbortSignal,
+  _abortSignal: AbortSignal,
 ): Promise<SpotifyTrackInfo[]> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(
-      YTDLP_BIN,
-      [
-        '--js-runtimes', 'node',
-        '--no-warnings',
-        '--flat-playlist',
-        '--print', '%(title)s\t%(artist)s\t%(uploader)s',
-        url,
-      ],
-      { shell: false, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
+  // spotify-url-info requires a fetch implementation — use node-fetch@2 (CJS)
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fetch = require('node-fetch');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getTracks } = require('spotify-url-info')(fetch);
 
-    abortSignal.addEventListener('abort', () => { proc.kill('SIGKILL'); reject(new Error('Aborted')); }, { once: true });
+  // getTracks returns an array of track objects from the Spotify embed page
+  const rawTracks = await getTracks(url) as Array<{
+    name?: string;
+    title?: string;
+    artists?: Array<{ name: string }>;
+    artist?: string;
+  }>;
 
-    let out = '';
-    proc.stdout?.on('data', (chunk: Buffer) => { out += chunk.toString(); });
-    proc.stderr?.on('data', (chunk: Buffer) => {
-      const msg = chunk.toString().trim();
-      if (msg) console.error('[yt-dlp spotify]', msg);
-    });
+  if (!rawTracks || rawTracks.length === 0) {
+    throw new Error('No tracks found for this Spotify URL');
+  }
 
-    proc.on('close', (code) => {
-      if (abortSignal.aborted) return;
-      if (code !== 0) { reject(new Error(`yt-dlp Spotify extraction failed (code ${code})`)); return; }
-
-      const tracks: SpotifyTrackInfo[] = out
-        .trim().split('\n').filter(Boolean)
-        .map(line => {
-          const [title, artist, uploader] = line.split('\t');
-          const resolvedArtist = (artist && artist !== 'NA') ? artist : (uploader ?? 'Unknown');
-          const resolvedTitle = title ?? 'Unknown';
-          return {
-            title: resolvedTitle,
-            artist: resolvedArtist,
-            searchQuery: `${resolvedArtist} - ${resolvedTitle}`,
-          };
-        });
-
-      if (tracks.length === 0) {
-        reject(new Error('No tracks found for this Spotify URL'));
-        return;
-      }
-
-      resolve(tracks);
-    });
-
-    proc.on('error', reject);
+  return rawTracks.map(t => {
+    const title = t.name ?? t.title ?? 'Unknown';
+    const artist = t.artists?.map(a => a.name).join(', ') ?? t.artist ?? 'Unknown';
+    return { title, artist, searchQuery: `${artist} - ${title}` };
   });
 }
 
@@ -293,8 +268,19 @@ async function runPredownloadLoop(signal: AbortSignal): Promise<void> {
     audioSetDownloading(item.id);
 
     try {
+      // If this is a Spotify track that hasn't been resolved to a YouTube URL yet,
+      // search YouTube Music first to get the actual download URL.
+      let downloadUrl = item.url;
+      if (item.spotifySearchQuery) {
+        console.log(`[predownload] Resolving Spotify track: ${item.spotifySearchQuery}`);
+        const result = await searchYouTubeMusic(item.spotifySearchQuery, signal);
+        downloadUrl = result.url;
+        // Persist the resolved URL so it's available for playback
+        audioSetUrl(item.id, downloadUrl);
+      }
+
       const filePath = await downloadAudio(
-        item.url,
+        downloadUrl,
         (p) => {
           if (p.percent % 25 < 1) {
             console.log(`[predownload] ${item.title} — ${p.percent.toFixed(0)}%`);
@@ -307,7 +293,6 @@ async function runPredownloadLoop(signal: AbortSignal): Promise<void> {
     } catch (err: unknown) {
       if (signal.aborted) break;
       console.error(`[predownload] Failed: ${item.title}`, err instanceof Error ? err.message : err);
-      // audioSetFailed now removes the item and returns its title
       const failedTitle = audioSetFailed(item.id);
       if (failedTitle && onPredownloadFailure) {
         onPredownloadFailure(failedTitle);
