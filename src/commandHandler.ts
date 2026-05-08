@@ -1,6 +1,6 @@
 import type { Client, TextChannel, VoiceChannel } from 'discord.js-selfbot-v13';
 import type { VideoQueue } from './videoQueue';
-import { isYouTubeUrl, searchYouTube, searchYouTubeMultiple, resolveChannelUrl, fetchChannelVideosBatch, type SearchResult } from './youtubePlayer';
+import { isYouTubeUrl, isYouTubePlaylistUrl, fetchYouTubePlaylist, searchYouTube, searchYouTubeMultiple, resolveChannelUrl, fetchChannelVideosBatch, type SearchResult } from './youtubePlayer';
 import type { ChannelBrowser } from './channelBrowser';
 import type { QueueDisplay } from './queueDisplay';
 import type { AudioQueueDisplay } from './audioQueueDisplay';
@@ -539,6 +539,37 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
     if (content.startsWith('!audio ')) {
       const url = content.slice('!audio '.length).trim();
       if (!url) { await reply('Usage: `!audio <url>` — YouTube, Spotify, SoundCloud, etc.'); return true; }
+
+      // YouTube playlist in audio mode — enqueue all as audio tracks
+      if (isYouTubePlaylistUrl(url)) {
+        await reply('📋 Loading YouTube playlist as audio...');
+        const abort = new AbortController();
+        let count = 0;
+        let firstUrl: string | null = null;
+        try {
+          await fetchYouTubePlaylist(url, abort.signal, (track) => {
+            if (count === 0) firstUrl = track.url;
+            else audioEnqueue({ url: track.url, title: track.title, duration: track.duration, artist: '' });
+            count++;
+          });
+          if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
+        } catch (err) {
+          console.error('[cmd] !audio playlist error:', err);
+          await reply('❌ Failed to load playlist. Try again.');
+          return true;
+        }
+        if (!firstUrl || count === 0) { await reply('No videos found in playlist.'); return true; }
+        await reply(`📋 Loaded **${count}** tracks from playlist.`);
+        if (streamController.isStreaming) { return true; }
+        try {
+          await client.guilds.fetch(GUILD_ID);
+          const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
+          const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+          await streamController.playAudio(voiceChannel, firstUrl, textChannel);
+        } catch (err) { console.error('[cmd] !audio playlist start error:', err); }
+        return true;
+      }
+
       if (streamController.isStreaming) {
         // Auto-enqueue to audio queue
         audioEnqueue({ url, title: url, duration: '?', artist: '' });
@@ -630,6 +661,37 @@ export function registerCommandHandler(deps: CommandHandlerDeps): void {
     // ── Play URL ─────────────────────────────────────────────────────────────
     if (content.startsWith('!play ')) {
       const url = content.slice('!play '.length).trim();
+
+      // YouTube playlist — enqueue all tracks, play first
+      if (isYouTubePlaylistUrl(url)) {
+        await reply('📋 Loading YouTube playlist...');
+        const abort = new AbortController();
+        let count = 0;
+        let firstUrl: string | null = null;
+        try {
+          await fetchYouTubePlaylist(url, abort.signal, (track) => {
+            if (count === 0) firstUrl = track.url;
+            else enqueue({ url: track.url, title: track.title, duration: track.duration, channel: '' });
+            count++;
+          });
+          if (queueDisplay) queueDisplay.refresh().catch(() => { });
+        } catch (err) {
+          console.error('[cmd] !play playlist error:', err);
+          await reply('❌ Failed to load playlist. Try again.');
+          return true;
+        }
+        if (!firstUrl || count === 0) { await reply('No videos found in playlist.'); return true; }
+        await reply(`📋 Loaded **${count}** videos from playlist.`);
+        if (streamController.isStreaming) { return true; }
+        try {
+          await client.guilds.fetch(GUILD_ID);
+          const voiceChannel = await client.channels.fetch(VOICE_CHANNEL_ID) as VoiceChannel;
+          const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID) as TextChannel;
+          await streamController.playUrl(voiceChannel, firstUrl, textChannel);
+        } catch (err) { console.error('[cmd] !play playlist start error:', err); }
+        return true;
+      }
+
       if (!isYouTubeUrl(url)) { await reply('Invalid URL. Only YouTube links are supported.'); return true; }
       if (streamController.isStreaming) {
         await autoEnqueue(url);

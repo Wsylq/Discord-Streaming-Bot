@@ -10,6 +10,7 @@ import { QueueDisplay } from './queueDisplay';
 import { AudioQueueDisplay } from './audioQueueDisplay';
 import { startPredownloader } from './audioMode';
 import { BotManager } from './botManager';
+import { audioResetStaleCachedFiles } from './audioQueueDb';
 
 process.on('uncaughtException', (err: Error) => {
   // SRTP errors from node-datachannel are non-fatal — the stream ended
@@ -30,6 +31,10 @@ process.on('uncaughtException', (err: Error) => {
 
 async function main(): Promise<void> {
   const config = loadConfig();
+
+  // Reset any cached audio files that no longer exist on disk (e.g. stale paths
+  // from a previous run on a different OS or after a server migration).
+  audioResetStaleCachedFiles();
 
   const queue = buildQueue(config.videoFolder);
   if (isEmpty(queue)) {

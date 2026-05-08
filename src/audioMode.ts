@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import {
   audioGetPending, audioSetDownloading, audioSetReady, audioSetFailed, audioSetUrl,
+  audioCountReady,
   type AudioQueueItem,
 } from './audioQueueDb';
 import { YTDLP_BIN } from './constants';
@@ -254,8 +255,19 @@ export function stopPredownloader(): void {
   onPredownloadFailure = null;
 }
 
+/** Maximum number of tracks to keep pre-downloaded ahead of the current position. */
+const MAX_PREDOWNLOAD_AHEAD = 4;
+
 async function runPredownloadLoop(signal: AbortSignal): Promise<void> {
   while (!signal.aborted) {
+    // Only download if we have fewer than MAX_PREDOWNLOAD_AHEAD ready tracks.
+    // This caps disk usage to roughly 4 × average-track-size at any time.
+    const readyCount = audioCountReady();
+    if (readyCount >= MAX_PREDOWNLOAD_AHEAD) {
+      await new Promise(r => setTimeout(r, 2000));
+      continue;
+    }
+
     const pending = audioGetPending();
 
     if (pending.length === 0) {
@@ -264,18 +276,15 @@ async function runPredownloadLoop(signal: AbortSignal): Promise<void> {
     }
 
     const item = pending[0];
-    console.log(`[predownload] Downloading: ${item.title || item.url}`);
+    console.log(`[predownload] Downloading: ${item.title || item.url} (${readyCount}/${MAX_PREDOWNLOAD_AHEAD} ready)`);
     audioSetDownloading(item.id);
 
     try {
-      // If this is a Spotify track that hasn't been resolved to a YouTube URL yet,
-      // search YouTube Music first to get the actual download URL.
       let downloadUrl = item.url;
       if (item.spotifySearchQuery) {
         console.log(`[predownload] Resolving Spotify track: ${item.spotifySearchQuery}`);
         const result = await searchYouTubeMusic(item.spotifySearchQuery, signal);
         downloadUrl = result.url;
-        // Persist the resolved URL so it's available for playback
         audioSetUrl(item.id, downloadUrl);
       }
 

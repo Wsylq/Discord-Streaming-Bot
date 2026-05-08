@@ -11,6 +11,88 @@ export function isYouTubeUrl(input: string): boolean {
   return /^https?:\/\/(www\.)?(youtube\.com\/watch|youtu\.be\/)/.test(input);
 }
 
+/** Returns true for YouTube playlist URLs (playlist page or video-in-playlist). */
+export function isYouTubePlaylistUrl(input: string): boolean {
+  return /^https?:\/\/(www\.)?youtube\.com\/(playlist\?|watch\?).*[?&]list=/.test(input)
+    || /^https?:\/\/(www\.)?youtube\.com\/playlist\?list=/.test(input);
+}
+
+export interface PlaylistTrack {
+  url: string;
+  title: string;
+  duration: string;
+}
+
+/**
+ * Fetches all video URLs and titles from a YouTube playlist using yt-dlp --flat-playlist.
+ * Returns results as they arrive via the onTrack callback so the caller can start
+ * playing the first track immediately without waiting for the full list.
+ */
+export function fetchYouTubePlaylist(
+  playlistUrl: string,
+  abortSignal: AbortSignal,
+  onTrack: (track: PlaylistTrack) => void,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(
+      YTDLP_BIN,
+      [
+        '--js-runtimes', 'node',
+        '--no-warnings',
+        '--flat-playlist',
+        '--print', '%(webpage_url)s\t%(title)s\t%(duration_string)s',
+        // Strip the video ID from the URL so we get the full playlist, not just one video
+        playlistUrl.replace(/[?&]v=[^&]+/, '').replace(/^(.*youtube\.com\/watch\?)/, 'https://www.youtube.com/playlist?'),
+      ],
+      { shell: false, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+
+    abortSignal.addEventListener('abort', () => { proc.kill('SIGKILL'); resolve(0); }, { once: true });
+
+    let partial = '';
+    let count = 0;
+
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      const text = partial + chunk.toString();
+      const lines = text.split('\n');
+      partial = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const [url, title, duration] = line.split('\t');
+        if (url?.startsWith('http')) {
+          onTrack({ url, title: title ?? url, duration: duration ?? '?' });
+          count++;
+        }
+      }
+    });
+
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      const msg = chunk.toString().trim();
+      if (msg) console.error('[yt-dlp playlist]', msg);
+    });
+
+    proc.on('close', (code) => {
+      if (abortSignal.aborted) { resolve(count); return; }
+      // Process any remaining partial line
+      if (partial.trim()) {
+        const [url, title, duration] = partial.split('\t');
+        if (url?.startsWith('http')) {
+          onTrack({ url, title: title ?? url, duration: duration ?? '?' });
+          count++;
+        }
+      }
+      if (code !== 0 && code !== null && count === 0) {
+        reject(new Error(`Failed to fetch playlist (code ${code})`));
+      } else {
+        resolve(count);
+      }
+    });
+
+    proc.on('error', reject);
+  });
+}
+
 /**
  * Searches YouTube for a query and returns the URL of the top result.
  */

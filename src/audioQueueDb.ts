@@ -94,6 +94,33 @@ export function audioGetPending(): AudioQueueItem[] {
     .all() as AudioQueueRow[]).map(mapRow);
 }
 
+/** Returns the number of items that are fully downloaded and ready to play. */
+export function audioCountReady(): number {
+  const row = getDb().prepare(`SELECT COUNT(*) as c FROM audio_queue WHERE download_status = 'ready'`).get() as { c: number };
+  return row.c;
+}
+
+/**
+ * Resets any 'ready' or 'downloading' items whose cached_file no longer exists
+ * back to 'pending' so they get re-downloaded. Call once at startup to handle
+ * stale paths from a previous run or a different OS.
+ */
+export function audioResetStaleCachedFiles(): number {
+  const stale = (getDb()
+    .prepare(`SELECT id, cached_file FROM audio_queue WHERE download_status IN ('ready', 'downloading') AND cached_file IS NOT NULL`)
+    .all() as Array<{ id: number; cached_file: string }>)
+    .filter(row => !require('fs').existsSync(row.cached_file));
+
+  if (stale.length === 0) return 0;
+
+  const resetStmt = getDb().prepare(`UPDATE audio_queue SET download_status = 'pending', cached_file = NULL WHERE id = ?`);
+  for (const row of stale) {
+    resetStmt.run(row.id);
+  }
+  console.log(`[audioQueue] Reset ${stale.length} stale cached file(s) to pending.`);
+  return stale.length;
+}
+
 export function audioSetDownloading(id: number): void {
   getDb().prepare(`UPDATE audio_queue SET download_status = 'downloading' WHERE id = ?`).run(id);
 }

@@ -220,7 +220,15 @@ export function createStreamController(
     textChannel: TextChannel,
   ): Promise<void> {
     if (!state.voiceChannel) return;
-    if (item.cachedFile && item.downloadStatus === 'ready') {
+
+    // Validate the cached file actually exists on this system before using it.
+    // Stale paths from a different OS (e.g. Windows paths on a Linux host) will
+    // fail the existence check and fall through to a fresh download.
+    const cachedFileValid = item.cachedFile
+      && item.downloadStatus === 'ready'
+      && require('fs').existsSync(item.cachedFile);
+
+    if (cachedFileValid && item.cachedFile) {
       // File is pre-downloaded — play it directly without going through
       // the full playAudio resolution/download flow
       state.isStreaming = true;
@@ -285,6 +293,10 @@ export function createStreamController(
         if (!state.loopAudioTrack) {
           state.loopAudioFile = null;
           state.loopAudioUrl = null;
+        }
+        // Delete the cached file now that it's been played (unless looping this track)
+        if (!state.loopAudioTrack && audioFile) {
+          deleteAudioFile(audioFile);
         }
         const nextItem = audioDequeue();
         if (nextItem && state.voiceChannel) {

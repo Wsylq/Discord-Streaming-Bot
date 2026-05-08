@@ -17,6 +17,8 @@ function formatElapsed(secs: number): string {
 }
 import {
   isYouTubeUrl,
+  isYouTubePlaylistUrl,
+  fetchYouTubePlaylist,
   searchYouTube,
   searchYouTubeMultiple,
   fetchChannelVideosBatch,
@@ -448,6 +450,44 @@ export function createBotCommandHandler(
 
     if (cmd === 'play') {
       const url = interaction.options.getString('url', true);
+
+      // YouTube playlist — load all tracks, play first
+      if (isYouTubePlaylistUrl(url)) {
+        const deferred = await safeDeferReply(interaction);
+        if (!deferred) return;
+        let count = 0;
+        let firstUrl: string | null = null;
+        try {
+          const abort = new AbortController();
+          await fetchYouTubePlaylist(url, abort.signal, (track) => {
+            if (count === 0) firstUrl = track.url;
+            else enqueue({ url: track.url, title: track.title, duration: track.duration, channel: '' });
+            count++;
+          });
+          if (queueDisplay) queueDisplay.refresh().catch(() => { });
+        } catch (err) {
+          console.error('[bot] /play playlist error:', err);
+          await safeEditReply(interaction, `❌ Failed to load playlist: ${err instanceof Error ? err.message : 'Unknown error'}`);
+          return;
+        }
+        if (!firstUrl || count === 0) { await safeEditReply(interaction, 'No videos found in playlist.'); return; }
+        if (streamController.isStreaming) {
+          await safeEditReply(interaction, `📋 Added **${count - 1}** videos to queue from playlist.`);
+          return;
+        }
+        try {
+          await selfbotClient.guilds.fetch(guildId);
+          const voiceChannel = await getSelfbotVoiceChannel();
+          const textChannel = await getSelfbotTextChannel();
+          await streamController.playUrl(voiceChannel, firstUrl, textChannel);
+          await safeEditReply(interaction, `📋 Playing playlist — **${count}** videos loaded.`);
+        } catch (err) {
+          console.error('[bot] /play playlist start error:', err);
+          await safeEditReply(interaction, `❌ ${err instanceof Error ? err.message : 'Unknown error'}`);
+        }
+        return;
+      }
+
       if (!isYouTubeUrl(url)) { await safeReply(interaction, 'Invalid URL. Only YouTube links are supported.'); return; }
       const deferred = await safeDeferReply(interaction);
       if (!deferred) return;
@@ -474,6 +514,44 @@ export function createBotCommandHandler(
 
     if (cmd === 'audio') {
       const url = interaction.options.getString('url', true);
+
+      // YouTube playlist in audio mode
+      if (isYouTubePlaylistUrl(url)) {
+        const deferred = await safeDeferReply(interaction);
+        if (!deferred) return;
+        let count = 0;
+        let firstUrl: string | null = null;
+        try {
+          const abort = new AbortController();
+          await fetchYouTubePlaylist(url, abort.signal, (track) => {
+            if (count === 0) firstUrl = track.url;
+            else audioEnqueue({ url: track.url, title: track.title, duration: track.duration, artist: '' });
+            count++;
+          });
+          if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
+        } catch (err) {
+          console.error('[bot] /audio playlist error:', err);
+          await safeEditReply(interaction, `❌ Failed to load playlist: ${err instanceof Error ? err.message : 'Unknown error'}`);
+          return;
+        }
+        if (!firstUrl || count === 0) { await safeEditReply(interaction, 'No videos found in playlist.'); return; }
+        if (streamController.isStreaming) {
+          await safeEditReply(interaction, `📋 Added **${count - 1}** tracks to audio queue from playlist.`);
+          return;
+        }
+        try {
+          await selfbotClient.guilds.fetch(guildId);
+          const voiceChannel = await getSelfbotVoiceChannel();
+          const textChannel = await getSelfbotTextChannel();
+          await streamController.playAudio(voiceChannel, firstUrl, textChannel);
+          await safeEditReply(interaction, `📋 Playing playlist as audio — **${count}** tracks loaded.`);
+        } catch (err) {
+          console.error('[bot] /audio playlist start error:', err);
+          await safeEditReply(interaction, `❌ ${err instanceof Error ? err.message : 'Unknown error'}`);
+        }
+        return;
+      }
+
       if (streamController.isStreaming) {
         audioEnqueue({ url, title: url, duration: '?', artist: '' });
         if (audioQueueDisplay) audioQueueDisplay.refresh().catch(() => { });
